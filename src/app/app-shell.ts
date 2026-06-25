@@ -3,16 +3,20 @@ import { customElement, state } from 'lit/decorators.js'
 import './status-bar'
 import '../editor/source-view'
 import '../editor/preview-pane'
+import '../editor/stream-viewer'
 import type { SourceView } from '../editor/source-view'
 import {
   openFile,
   saveFile,
   reopenWithEncoding,
   confirmDiscard,
+  startStream,
+  onStreamProgress,
   type Eol,
   type Confidence,
   type OpenResult,
   type Tier,
+  type UnlistenFn,
 } from '../services/ipc'
 
 type Mode = 'source' | 'split'
@@ -62,6 +66,7 @@ export class VaelApp extends LitElement {
   @state() private lineCount: number | null = null
 
   private previewTimer?: number
+  private streamUnlisten?: UnlistenFn
 
   static styles = css`
     :host {
@@ -153,24 +158,9 @@ export class VaelApp extends LitElement {
       flex: 1 1 50%;
       min-width: 0;
     }
-    .big-placeholder {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      color: #b9b9c2;
-      text-align: center;
-      padding: 24px;
-    }
-    .big-placeholder .icon {
-      font-size: 34px;
-    }
-    .big-placeholder .hint {
-      color: #8a8a93;
-      max-width: 460px;
-      font-size: 12.5px;
+    .workspace stream-viewer {
+      flex: 1 1 100%;
+      min-width: 0;
     }
   `
 
@@ -188,21 +178,6 @@ export class VaelApp extends LitElement {
       : `${formatBytes(this.byteLen)} — opened in read-only streaming viewer.`
   }
 
-  /** Placeholder shown for the >1 GB read-only tier (real viewer lands in B). */
-  private renderBigPlaceholder() {
-    return html`
-      <div class="big-placeholder">
-        <div class="icon">🗄️</div>
-        <div>
-          <strong>${this.path ?? 'file'}</strong> is ${formatBytes(this.byteLen)}.
-        </div>
-        <div class="hint">
-          Files over 1 GB open in a read-only streaming viewer so they never have
-          to fit in memory. The windowed viewer is coming up next.
-        </div>
-      </div>
-    `
-  }
 
   private async applyOpen(r: OpenResult) {
     this.path = r.path
@@ -221,8 +196,10 @@ export class VaelApp extends LitElement {
     // Let Lit mount the view that matches this tier before we drive it.
     await this.updateComplete
     if (r.tier === 'streamViewer') {
-      // The whole file is never loaded; the read-only viewer pulls windows.
+      // The whole file is never loaded; the read-only viewer pulls windows and
+      // the line count fills in from the background index build.
       this.dirty = false
+      await this.startStreamFor(r.path, this.encoding)
       return
     }
     this.editor?.setDegraded(r.tier === 'degraded')
@@ -231,8 +208,26 @@ export class VaelApp extends LitElement {
     if (this.mode === 'split') this.previewMd = r.content
   }
 
+  /**
+   * Start the >1 GB streaming session and subscribe to its background
+   * index-build progress (which fills in the total line count). The
+   * subscription is set up before `startStream` so no early progress is missed.
+   */
+  private async startStreamFor(path: string, encoding: string) {
+    this.streamUnlisten?.()
+    this.streamUnlisten = await onStreamProgress((p) => {
+      this.lineCount = p.lines
+    })
+    await startStream(path, encoding)
+  }
+
   private fail(e: unknown) {
     this.error = e instanceof Error ? e.message : String(e)
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback()
+    this.streamUnlisten?.()
   }
 
   private onDocChanged() {
@@ -359,7 +354,11 @@ export class VaelApp extends LitElement {
 
       <div class="workspace ${this.mode}">
         ${this.tier === 'streamViewer'
-          ? this.renderBigPlaceholder()
+          ? html`<stream-viewer
+              .path=${this.path ?? ''}
+              .encoding=${this.encoding}
+              .totalLines=${this.lineCount ?? 1}
+            ></stream-viewer>`
           : html`
               <source-view
                 @doc-changed=${this.onDocChanged}

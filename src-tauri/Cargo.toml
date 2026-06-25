@@ -25,6 +25,9 @@ serde_json = "1"
 encoding_rs = "0.8"
 chardetng = "1"
 tempfile = "3"
+# Large-file streaming (M1): zero-copy random access + SIMD newline scanning
+memmap2 = "0.9"
+memchr = "2"
 
 [features]
 # Used by Tauri's mobile tooling; harmless on desktop.

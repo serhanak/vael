@@ -1,3 +1,4 @@
+pub mod bigfile;
 pub mod file;
 
 use serde::Serialize;

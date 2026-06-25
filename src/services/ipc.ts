@@ -1,5 +1,9 @@
-import { invoke } from '@tauri-apps/api/core'
+import { invoke, Channel } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open as openDialog, save as saveDialog, ask } from '@tauri-apps/plugin-dialog'
+
+/** Re-exported so the rest of the app never imports `@tauri-apps/*` directly. */
+export type { UnlistenFn }
 
 /**
  * IPC / platform service layer — the ONLY module allowed to touch
@@ -83,6 +87,53 @@ export async function saveFile(
 /** "UTF-8-BOM" -> "UTF-8"; the BOM travels in the separate `addBom` flag. */
 export function encodingBase(label: string): string {
   return label === 'UTF-8-BOM' ? 'UTF-8' : label
+}
+
+// ---------------------------------------------------------------------------
+// Large-file streaming (>1 GB read-only tier)
+// ---------------------------------------------------------------------------
+
+/** A window of decoded lines streamed from the backend (matches Rust LinesChunk). */
+export interface LinesChunk {
+  startLine: number
+  lines: string[]
+  eof: boolean
+}
+
+/** Background line-index build progress (matches Rust StreamProgress). */
+export interface StreamProgress {
+  lines: number
+  done: boolean
+}
+
+/**
+ * Open a >1 GB file for streaming: the backend memory-maps it and builds a
+ * sparse line index in the background, reporting line counts via
+ * `onStreamProgress`. No content is returned here — pull it with `readLines`.
+ */
+export function startStream(path: string, encoding: string): Promise<void> {
+  return invoke('start_stream', { path, encoding: encodingBase(encoding) })
+}
+
+/**
+ * Stream `lineCount` lines starting at `startLine` (0-based). Chunks arrive via
+ * `onChunk` as they decode; the returned promise resolves when the window is
+ * fully sent.
+ */
+export function readLines(
+  path: string,
+  startLine: number,
+  lineCount: number,
+  onChunk: (chunk: LinesChunk) => void,
+): Promise<void> {
+  const channel = new Channel<LinesChunk>()
+  channel.onmessage = onChunk
+  return invoke('read_lines', { path, startLine, lineCount, onChunk: channel })
+}
+
+/** Subscribe to background index-build progress for the active stream. */
+export function onStreamProgress(cb: (p: StreamProgress) => void): Promise<UnlistenFn> {
+  return listen<StreamProgress>('stream-progress', (e) => cb(e.payload))
 }
 
 /**
