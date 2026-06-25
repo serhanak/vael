@@ -1,0 +1,75 @@
+import { LitElement, html, css } from 'lit'
+import { customElement } from 'lit/decorators.js'
+import { EditorView } from '@codemirror/view'
+import { EditorState } from '@codemirror/state'
+import { baseExtensions } from './cm-setup'
+
+/**
+ * CodeMirror 6 source-editing view, hosted inside a Lit element.
+ *
+ * M0 scope: plain source editing with Markdown-aware highlighting. The
+ * markdown text is the single source of truth (SSOT); later modes
+ * (split preview, Crepe WYSIWYG, stream viewer) read/write the same text.
+ */
+@customElement('source-view')
+export class SourceView extends LitElement {
+  private view?: EditorView
+
+  static styles = css`
+    :host {
+      display: block;
+      height: 100%;
+      overflow: hidden;
+    }
+    .cm-host {
+      height: 100%;
+    }
+    /* CodeMirror fills the host */
+    .cm-host .cm-editor {
+      height: 100%;
+    }
+  `
+
+  firstUpdated() {
+    const parent = this.renderRoot.querySelector('.cm-host') as HTMLElement
+    this.view = new EditorView({
+      state: EditorState.create({
+        doc: '',
+        extensions: baseExtensions(() =>
+          this.dispatchEvent(new CustomEvent('doc-changed')),
+        ),
+      }),
+      parent,
+    })
+  }
+
+  /** Replace the whole document (e.g. after opening a file). */
+  setText(text: string) {
+    const view = this.view
+    if (!view) return
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: text },
+    })
+  }
+
+  /** Current document text. */
+  getText(): string {
+    return this.view?.state.doc.toString() ?? ''
+  }
+
+  render() {
+    return html`<div class="cm-host"></div>`
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback()
+    this.view?.destroy()
+    this.view = undefined
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'source-view': SourceView
+  }
+}

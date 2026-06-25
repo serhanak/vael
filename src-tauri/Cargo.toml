@@ -1,0 +1,27 @@
+[package]
+name = "vael"
+version = "0.0.0"
+description = "A lightweight, privacy-first editor for Markdown, text, and code."
+authors = ["vael contributors"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.77"
+
+# The library half of the app (so the same code can drive desktop & mobile).
+[lib]
+name = "vael_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# Used by Tauri's mobile tooling; harmless on desktop.
+default = []
