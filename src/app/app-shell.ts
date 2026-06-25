@@ -2,6 +2,7 @@ import { LitElement, html, css } from 'lit'
 import { customElement, state } from 'lit/decorators.js'
 import './status-bar'
 import '../editor/source-view'
+import '../editor/preview-pane'
 import type { SourceView } from '../editor/source-view'
 import {
   openFile,
@@ -13,9 +14,11 @@ import {
   type OpenResult,
 } from '../services/ipc'
 
+type Mode = 'source' | 'split'
+
 /**
  * Top-level application shell (M1): toolbar + CodeMirror source view + an
- * always-visible encoding/EOL status bar.
+ * optional live Markdown preview + an always-visible encoding/EOL status bar.
  *
  * Hard rule (PLAN.md §3.2): the shell and editor never import `@tauri-apps/*`
  * directly — only `services/*` touches the IPC boundary.
@@ -26,6 +29,8 @@ export class VaelApp extends LitElement {
   @state() private dirty = false
   @state() private busy = false
   @state() private error = ''
+  @state() private mode: Mode = 'source'
+  @state() private previewMd = ''
 
   // Document encoding/EOL state (base label; BOM carried separately).
   @state() private encoding = 'UTF-8'
@@ -36,6 +41,8 @@ export class VaelApp extends LitElement {
 
   @state() private line = 1
   @state() private col = 1
+
+  private previewTimer?: number
 
   static styles = css`
     :host {
@@ -71,6 +78,15 @@ export class VaelApp extends LitElement {
       opacity: 0.5;
       cursor: default;
     }
+    .modes {
+      display: inline-flex;
+      gap: 2px;
+      margin-left: 4px;
+    }
+    .modes button.active {
+      background: #4a4a8a;
+      border-color: #5a5aa0;
+    }
     .path {
       margin-left: 6px;
       color: #b9b9c2;
@@ -80,14 +96,27 @@ export class VaelApp extends LitElement {
     }
     .error {
       color: #ff8a8a;
-      max-width: 50%;
+      max-width: 40%;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    source-view {
+    .workspace {
       flex: 1 1 auto;
       min-height: 0;
+      display: flex;
+    }
+    .workspace source-view {
+      flex: 1 1 100%;
+      min-width: 0;
+    }
+    .workspace.split source-view {
+      flex: 1 1 50%;
+      border-right: 1px solid #333;
+    }
+    .workspace preview-pane {
+      flex: 1 1 50%;
+      min-width: 0;
     }
   `
 
@@ -105,10 +134,29 @@ export class VaelApp extends LitElement {
     this.canSave = r.canSave
     this.editor?.setText(r.content)
     this.dirty = false // setText fires doc-changed synchronously; clear after
+    if (this.mode === 'split') this.previewMd = r.content
   }
 
   private fail(e: unknown) {
     this.error = e instanceof Error ? e.message : String(e)
+  }
+
+  private onDocChanged() {
+    this.dirty = true
+    this.schedulePreview()
+  }
+
+  private schedulePreview() {
+    if (this.mode !== 'split') return
+    clearTimeout(this.previewTimer)
+    this.previewTimer = window.setTimeout(() => {
+      this.previewMd = this.editor?.getText() ?? ''
+    }, 150)
+  }
+
+  private setMode(mode: Mode) {
+    this.mode = mode
+    if (mode === 'split') this.previewMd = this.editor?.getText() ?? ''
   }
 
   private async onOpen() {
@@ -192,19 +240,32 @@ export class VaelApp extends LitElement {
         >
           Save
         </button>
+        <span class="modes">
+          <button class=${this.mode === 'source' ? 'active' : ''} @click=${() => this.setMode('source')}>
+            Source
+          </button>
+          <button class=${this.mode === 'split' ? 'active' : ''} @click=${() => this.setMode('split')}>
+            Split
+          </button>
+        </span>
         <span class="path">${name}${this.dirty ? ' •' : ''}</span>
         <span class="spacer"></span>
         ${this.error ? html`<span class="error" title=${this.error}>⚠ ${this.error}</span>` : ''}
       </header>
 
-      <source-view
-        @doc-changed=${() => (this.dirty = true)}
-        @cursor-changed=${(e: Event) => {
-          const d = (e as CustomEvent<{ line: number; col: number }>).detail
-          this.line = d.line
-          this.col = d.col
-        }}
-      ></source-view>
+      <div class="workspace ${this.mode}">
+        <source-view
+          @doc-changed=${this.onDocChanged}
+          @cursor-changed=${(e: Event) => {
+            const d = (e as CustomEvent<{ line: number; col: number }>).detail
+            this.line = d.line
+            this.col = d.col
+          }}
+        ></source-view>
+        ${this.mode === 'split'
+          ? html`<preview-pane .markdown=${this.previewMd}></preview-pane>`
+          : ''}
+      </div>
 
       <status-bar
         .encoding=${this.encoding}
