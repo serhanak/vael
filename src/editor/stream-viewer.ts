@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
-import { readLines } from '../services/ipc'
+import { readLines, searchFile, type Hit, type SearchSummary } from '../services/ipc'
 
 /**
  * Read-only virtualized viewer for the >1 GB tier (docs/design/02-large-file.md
@@ -19,6 +19,22 @@ export class StreamViewer extends LitElement {
 
   @state() private firstVisible = 0
   @state() private visibleCount = 0
+
+  // Find bar (ripgrep-backed search over the whole file).
+  @state() private findOpen = false
+  @state() private query = ''
+  @state() private useRegex = false
+  @state() private caseInsensitive = true
+  @state() private hits: Hit[] = []
+  @state() private current = -1
+  @state() private searching = false
+  @state() private searchError = ''
+  @state() private summary: SearchSummary | null = null
+  /** Line currently centered by a search jump, highlighted in the gutter+row. */
+  @state() private activeLine = -1
+  /** Monotonic token so a slow search can't overwrite a newer one's results. */
+  private searchSeq = 0
+  private searchTimer?: number
 
   /** line index → decoded text. Bounded; oldest *insertions* are evicted
    *  (insertion-order, not access-order), except lines in the visible window. */
@@ -82,12 +98,172 @@ export class StreamViewer extends LitElement {
     .tx.loading {
       color: #44444c;
     }
+    .row.active .tx {
+      background: #3a3a18;
+    }
+    .row.active .ln {
+      background: #3a3a18;
+      color: #d8d8a0;
+    }
+    .findbar {
+      position: absolute;
+      top: 8px;
+      right: 18px;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 6px;
+      background: #2c2c33;
+      border: 1px solid #444;
+      border-radius: 6px;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+      font: 12px/1.4 system-ui, sans-serif;
+      color: #d6d6de;
+    }
+    .findbar input[type='text'] {
+      width: 200px;
+      font: inherit;
+      color: #e6e6e6;
+      background: #1f1f24;
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 3px 6px;
+    }
+    .findbar button {
+      font: inherit;
+      color: #d6d6de;
+      background: #34343b;
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 2px 7px;
+      cursor: pointer;
+    }
+    .findbar button:hover:not(:disabled) {
+      background: #3e3e47;
+    }
+    .findbar button.toggle.on {
+      background: #4a4a8a;
+      border-color: #5a5aa0;
+      color: #fff;
+    }
+    .findbar button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .findbar .count {
+      min-width: 78px;
+      text-align: center;
+      color: #9a9aa2;
+      font-variant-numeric: tabular-nums;
+    }
+    .findbar .count.err {
+      color: #ff8a8a;
+    }
   `
+
+  connectedCallback() {
+    super.connectedCallback()
+    // Window-scoped so Ctrl+F works without first clicking into the viewer;
+    // only one stream-viewer is mounted at a time (the >1 GB tier).
+    window.addEventListener('keydown', this.onKeydown)
+  }
 
   firstUpdated() {
     this.scrollEl = this.renderRoot.querySelector('.scroll') as HTMLElement
     this.scrollEl.addEventListener('scroll', this.onScroll, { passive: true })
     this.recompute()
+  }
+
+  private onKeydown = (e: KeyboardEvent) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+      e.preventDefault()
+      this.openFind()
+    } else if (e.key === 'Escape' && this.findOpen) {
+      this.closeFind()
+    }
+  }
+
+  private openFind() {
+    this.findOpen = true
+    this.updateComplete.then(() => {
+      const input = this.renderRoot.querySelector('.findbar input') as HTMLInputElement | null
+      input?.focus()
+      input?.select()
+    })
+  }
+
+  private closeFind() {
+    this.findOpen = false
+    this.activeLine = -1
+  }
+
+  /** Re-run the search shortly after the query/options settle. */
+  private scheduleSearch() {
+    clearTimeout(this.searchTimer)
+    this.searchTimer = window.setTimeout(() => this.runSearch(), 180)
+  }
+
+  private async runSearch() {
+    const q = this.query
+    const seq = ++this.searchSeq
+    if (!q) {
+      this.hits = []
+      this.current = -1
+      this.activeLine = -1
+      this.summary = null
+      this.searchError = ''
+      return
+    }
+    this.searching = true
+    this.searchError = ''
+    const collected: Hit[] = []
+    try {
+      const summary = await searchFile(this.path, q, this.useRegex, this.caseInsensitive, (batch) => {
+        if (seq === this.searchSeq) collected.push(...batch)
+      })
+      if (seq !== this.searchSeq) return // a newer search superseded us
+      this.hits = collected
+      this.summary = summary
+      this.current = collected.length ? 0 : -1
+      if (this.current >= 0) this.jumpTo(0)
+    } catch (e) {
+      if (seq !== this.searchSeq) return
+      this.hits = []
+      this.current = -1
+      this.summary = null
+      this.searchError = e instanceof Error ? e.message : String(e)
+    } finally {
+      if (seq === this.searchSeq) this.searching = false
+    }
+  }
+
+  private jumpTo(i: number) {
+    if (i < 0 || i >= this.hits.length) return
+    this.current = i
+    const line = this.hits[i].line
+    this.activeLine = line
+    const el = this.scrollEl
+    if (el) {
+      // Center the hit line in the viewport.
+      const target = line * this.lineHeight - el.clientHeight / 2 + this.lineHeight / 2
+      el.scrollTop = Math.max(0, target)
+      this.recompute()
+    }
+  }
+
+  private step(delta: number) {
+    if (!this.hits.length) return
+    const next = (this.current + delta + this.hits.length) % this.hits.length
+    this.jumpTo(next)
+  }
+
+  private onFindKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      if (this.hits.length) this.step(e.shiftKey ? -1 : 1)
+      else this.runSearch()
+    }
   }
 
   updated(changed: Map<string, unknown>) {
@@ -98,6 +274,13 @@ export class StreamViewer extends LitElement {
       this.cache.clear()
       this.cacheOrder = []
       this.pendingFrom = this.pendingTo = -1
+      // Search results belong to the previous file/encoding — drop them.
+      this.searchSeq++
+      this.hits = []
+      this.current = -1
+      this.activeLine = -1
+      this.summary = null
+      this.searchError = ''
       if (this.scrollEl) this.scrollEl.scrollTop = 0
       this.firstVisible = 0
       this.recompute()
@@ -111,6 +294,8 @@ export class StreamViewer extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback()
     this.scrollEl?.removeEventListener('scroll', this.onScroll)
+    window.removeEventListener('keydown', this.onKeydown)
+    clearTimeout(this.searchTimer)
   }
 
   private onScroll = () => this.recompute()
@@ -185,6 +370,64 @@ export class StreamViewer extends LitElement {
     }
   }
 
+  private renderFindBar() {
+    const count = this.searchError
+      ? html`<span class="count err" title=${this.searchError}>error</span>`
+      : this.searching
+        ? html`<span class="count">…</span>`
+        : this.hits.length
+          ? html`<span class="count"
+              >${(this.current + 1).toLocaleString()} / ${this.hits.length.toLocaleString()}${this
+                .summary?.truncated
+                ? '+'
+                : ''}</span
+            >`
+          : this.query
+            ? html`<span class="count">No results</span>`
+            : html`<span class="count"></span>`
+    return html`
+      <div class="findbar" @keydown=${(e: KeyboardEvent) => this.onFindKeydown(e)}>
+        <input
+          type="text"
+          placeholder="Find in file…"
+          .value=${this.query}
+          @input=${(e: Event) => {
+            this.query = (e.target as HTMLInputElement).value
+            this.scheduleSearch()
+          }}
+        />
+        <button
+          class="toggle ${this.caseInsensitive ? '' : 'on'}"
+          title="Match case"
+          @click=${() => {
+            this.caseInsensitive = !this.caseInsensitive
+            this.runSearch()
+          }}
+        >
+          Aa
+        </button>
+        <button
+          class="toggle ${this.useRegex ? 'on' : ''}"
+          title="Regular expression"
+          @click=${() => {
+            this.useRegex = !this.useRegex
+            this.runSearch()
+          }}
+        >
+          .*
+        </button>
+        ${count}
+        <button title="Previous (Shift+Enter)" ?disabled=${!this.hits.length} @click=${() => this.step(-1)}>
+          ↑
+        </button>
+        <button title="Next (Enter)" ?disabled=${!this.hits.length} @click=${() => this.step(1)}>
+          ↓
+        </button>
+        <button title="Close (Esc)" @click=${() => this.closeFind()}>✕</button>
+      </div>
+    `
+  }
+
   render() {
     const from = Math.max(0, this.firstVisible - this.overscan)
     const to = Math.min(this.totalLines, this.firstVisible + this.visibleCount + this.overscan)
@@ -193,13 +436,14 @@ export class StreamViewer extends LitElement {
     for (let i = from; i < to; i++) {
       const text = this.cache.get(i)
       rows.push(html`
-        <div class="row" style="top:${i * this.lineHeight}px">
+        <div class="row ${i === this.activeLine ? 'active' : ''}" style="top:${i * this.lineHeight}px">
           <span class="ln" style="min-width:${gutter}">${(i + 1).toLocaleString()}</span>
           <span class="tx ${text === undefined ? 'loading' : ''}">${text ?? '⋯'}</span>
         </div>
       `)
     }
     return html`
+      ${this.findOpen ? this.renderFindBar() : ''}
       <div class="scroll">
         <div class="sizer" style="height:${this.totalLines * this.lineHeight}px"></div>
         <div class="rows">${rows}</div>
