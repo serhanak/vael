@@ -8,6 +8,7 @@
 //! whole file in memory; hits flow to the frontend in batches over a Channel.
 
 use grep_regex::RegexMatcherBuilder;
+use grep_matcher::LineTerminator;
 use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkMatch};
 use serde::Serialize;
 use tauri::ipc::Channel;
@@ -22,9 +23,10 @@ const BATCH: usize = 1000;
 #[serde(rename_all = "camelCase")]
 pub struct Hit {
     /// 0-based line number (matches the stream viewer / read_lines indexing).
+    /// The viewer seeks by line, not byte offset — and grep's absolute byte
+    /// offset is into the (possibly transcoded) decoded stream, not the file,
+    /// so it would be wrong to seek by anyway. Hence: line only.
     pub line: u64,
-    /// Absolute byte offset of the line start (for seeking).
-    pub byte_offset: u64,
     /// The matched line, trimmed of its line terminator (for a result preview).
     pub preview: String,
 }
@@ -42,7 +44,8 @@ fn io_err<E: std::fmt::Display>(e: E) -> std::io::Error {
 }
 
 /// Build a line matcher. A non-regex query is escaped to a literal so the user's
-/// `.`/`*`/`(` are matched verbatim.
+/// `.`/`*`/`(` are matched verbatim. `crlf(true)` so `$`/`^` anchor correctly on
+/// Windows CRLF files (the `\r` doesn't block an end-anchored match).
 fn build_matcher(
     pattern: &str,
     is_regex: bool,
@@ -55,8 +58,18 @@ fn build_matcher(
     };
     RegexMatcherBuilder::new()
         .case_insensitive(case_insensitive)
+        .crlf(true)
         .build(&pat)
         .map_err(|e| format!("Invalid search pattern: {e}"))
+}
+
+/// A line-numbered searcher whose terminator strips an optional `\r` (so CRLF
+/// and LF files both work, and `$` matches before `\r\n`).
+fn build_searcher() -> Searcher {
+    SearcherBuilder::new()
+        .line_number(true)
+        .line_terminator(LineTerminator::crlf())
+        .build()
 }
 
 fn make_hit(m: &SinkMatch<'_>) -> Hit {
@@ -65,11 +78,7 @@ fn make_hit(m: &SinkMatch<'_>) -> Hit {
     let preview = String::from_utf8_lossy(m.bytes())
         .trim_end_matches(|c| c == '\n' || c == '\r')
         .to_string();
-    Hit {
-        line,
-        byte_offset: m.absolute_byte_offset(),
-        preview,
-    }
+    Hit { line, preview }
 }
 
 /// Pure, in-memory search over a byte slice. Returns up to `max_hits` matches
@@ -110,9 +119,7 @@ pub fn search_bytes(
         max: max_hits,
         truncated: false,
     };
-    SearcherBuilder::new()
-        .line_number(true)
-        .build()
+    build_searcher()
         .search_slice(&matcher, data, &mut sink)
         .map_err(|e| e.to_string())?;
     Ok((sink.hits, sink.truncated))
@@ -172,9 +179,7 @@ pub fn search_file(
         max: MAX_HITS,
         truncated: false,
     };
-    SearcherBuilder::new()
-        .line_number(true)
-        .build()
+    build_searcher()
         .search_path(&matcher, &path, &mut sink)
         .map_err(|e| format!("Search failed: {e}"))?;
     sink.flush().map_err(|e| e.to_string())?;
@@ -237,6 +242,15 @@ mod tests {
     #[test]
     fn invalid_regex_is_an_error() {
         assert!(search_bytes(HAYSTACK, "(unclosed", true, false, 100).is_err());
+    }
+
+    #[test]
+    fn end_anchor_matches_on_crlf_lines() {
+        // Windows CRLF: `foo$` must match despite the trailing \r before \n.
+        let data = b"foo\r\nbar\r\nfoo\r\n";
+        let (hits, _) = search_bytes(data, "foo$", true, false, 100).unwrap();
+        assert_eq!(hits.iter().map(|h| h.line).collect::<Vec<_>>(), vec![0, 2]);
+        assert_eq!(hits[0].preview, "foo"); // preview has no trailing \r
     }
 
     #[test]

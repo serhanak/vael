@@ -152,9 +152,8 @@ export function closeStream(): Promise<void> {
 
 /** A single search match (matches Rust `Hit`). */
 export interface Hit {
-  /** 0-based line number. */
+  /** 0-based line number (the viewer seeks by line). */
   line: number
-  byteOffset: number
   preview: string
 }
 

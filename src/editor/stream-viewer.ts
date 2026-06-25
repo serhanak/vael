@@ -32,9 +32,21 @@ export class StreamViewer extends LitElement {
   @state() private summary: SearchSummary | null = null
   /** Line currently centered by a search jump, highlighted in the gutter+row. */
   @state() private activeLine = -1
+  /** Highest hit line — search greps the whole file independently of the
+   *  background index, so a hit can be past the indexed `totalLines`; the
+   *  virtual extent must cover it or the scroll clamps and the row won't render. */
+  @state() private maxHitLine = 0
+  /** The query `hits` belong to — guards navigating stale results mid-edit. */
+  private resultsQuery = ''
   /** Monotonic token so a slow search can't overwrite a newer one's results. */
   private searchSeq = 0
   private searchTimer?: number
+
+  /** Virtual document height in lines: the indexed total, but at least far
+   *  enough to reach the deepest search hit so jumps aren't clamped. */
+  private get virtualLines(): number {
+    return Math.max(this.totalLines, this.maxHitLine + 1)
+  }
 
   /** line index → decoded text. Bounded; oldest *insertions* are evicted
    *  (insertion-order, not access-order), except lines in the visible window. */
@@ -204,19 +216,25 @@ export class StreamViewer extends LitElement {
     this.searchTimer = window.setTimeout(() => this.runSearch(), 180)
   }
 
+  private clearResults() {
+    this.hits = []
+    this.current = -1
+    this.activeLine = -1
+    this.maxHitLine = 0
+    this.summary = null
+    this.resultsQuery = ''
+  }
+
   private async runSearch() {
     const q = this.query
     const seq = ++this.searchSeq
+    this.clearResults() // drop stale results so they can't be navigated mid-search
+    this.searchError = ''
     if (!q) {
-      this.hits = []
-      this.current = -1
-      this.activeLine = -1
-      this.summary = null
-      this.searchError = ''
+      this.searching = false
       return
     }
     this.searching = true
-    this.searchError = ''
     const collected: Hit[] = []
     try {
       const summary = await searchFile(this.path, q, this.useRegex, this.caseInsensitive, (batch) => {
@@ -224,28 +242,32 @@ export class StreamViewer extends LitElement {
       })
       if (seq !== this.searchSeq) return // a newer search superseded us
       this.hits = collected
+      this.maxHitLine = collected.reduce((m, h) => Math.max(m, h.line), 0)
       this.summary = summary
+      this.resultsQuery = q
       this.current = collected.length ? 0 : -1
-      if (this.current >= 0) this.jumpTo(0)
+      if (this.current >= 0) await this.jumpTo(0)
     } catch (e) {
       if (seq !== this.searchSeq) return
-      this.hits = []
-      this.current = -1
-      this.summary = null
+      this.clearResults()
       this.searchError = e instanceof Error ? e.message : String(e)
     } finally {
       if (seq === this.searchSeq) this.searching = false
     }
   }
 
-  private jumpTo(i: number) {
+  private async jumpTo(i: number) {
     if (i < 0 || i >= this.hits.length) return
     this.current = i
     const line = this.hits[i].line
     this.activeLine = line
+    // The hit may be past the still-indexing `totalLines`. `virtualLines`
+    // already covers it, but the scroll container's sizer only reflects that
+    // after Lit commits the render — wait, or the browser clamps scrollTop to
+    // the shorter height and we land in the wrong place.
+    await this.updateComplete
     const el = this.scrollEl
     if (el) {
-      // Center the hit line in the viewport.
       const target = line * this.lineHeight - el.clientHeight / 2 + this.lineHeight / 2
       el.scrollTop = Math.max(0, target)
       this.recompute()
@@ -255,14 +277,21 @@ export class StreamViewer extends LitElement {
   private step(delta: number) {
     if (!this.hits.length) return
     const next = (this.current + delta + this.hits.length) % this.hits.length
-    this.jumpTo(next)
+    void this.jumpTo(next)
   }
 
   private onFindKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter') {
       e.preventDefault()
-      if (this.hits.length) this.step(e.shiftKey ? -1 : 1)
-      else this.runSearch()
+      // Only step through results that belong to the current query; otherwise
+      // run the search now (don't navigate the previous query's stale hits).
+      const fresh = this.resultsQuery === this.query && this.hits.length > 0
+      if (fresh) {
+        this.step(e.shiftKey ? -1 : 1)
+      } else if (!this.searching) {
+        clearTimeout(this.searchTimer)
+        void this.runSearch()
+      }
     }
   }
 
@@ -276,10 +305,7 @@ export class StreamViewer extends LitElement {
       this.pendingFrom = this.pendingTo = -1
       // Search results belong to the previous file/encoding — drop them.
       this.searchSeq++
-      this.hits = []
-      this.current = -1
-      this.activeLine = -1
-      this.summary = null
+      this.clearResults()
       this.searchError = ''
       if (this.scrollEl) this.scrollEl.scrollTop = 0
       this.firstVisible = 0
@@ -312,7 +338,9 @@ export class StreamViewer extends LitElement {
    *  contiguous request (the gap between the first and last missing line). */
   private async ensureLoaded(start: number, count: number) {
     const from = Math.max(0, start)
-    const to = Math.min(this.totalLines, from + count)
+    // Allow fetching past the indexed total up to a search hit; read_lines
+    // forward-scans the mmap so it can resolve lines the index hasn't reached.
+    const to = Math.min(this.virtualLines, from + count)
     let missFrom = -1
     for (let i = from; i < to; i++) {
       if (!this.cache.has(i)) {
@@ -417,21 +445,29 @@ export class StreamViewer extends LitElement {
           .*
         </button>
         ${count}
-        <button title="Previous (Shift+Enter)" ?disabled=${!this.hits.length} @click=${() => this.step(-1)}>
-          ↑
-        </button>
-        <button title="Next (Enter)" ?disabled=${!this.hits.length} @click=${() => this.step(1)}>
-          ↓
-        </button>
+        ${(() => {
+          const stale = !this.hits.length || this.resultsQuery !== this.query
+          return html`
+            <button title="Previous (Shift+Enter)" ?disabled=${stale} @click=${() => this.step(-1)}>
+              ↑
+            </button>
+            <button title="Next (Enter)" ?disabled=${stale} @click=${() => this.step(1)}>
+              ↓
+            </button>
+          `
+        })()}
         <button title="Close (Esc)" @click=${() => this.closeFind()}>✕</button>
       </div>
     `
   }
 
   render() {
+    // Use the virtual extent (which covers search hits past the indexed total)
+    // so the sizer is tall enough to reach a hit and the matched row renders.
+    const extent = this.virtualLines
     const from = Math.max(0, this.firstVisible - this.overscan)
-    const to = Math.min(this.totalLines, this.firstVisible + this.visibleCount + this.overscan)
-    const gutter = `${Math.max(4, String(this.totalLines).length)}ch`
+    const to = Math.min(extent, this.firstVisible + this.visibleCount + this.overscan)
+    const gutter = `${Math.max(4, String(extent).length)}ch`
     const rows = []
     for (let i = from; i < to; i++) {
       const text = this.cache.get(i)
@@ -445,7 +481,7 @@ export class StreamViewer extends LitElement {
     return html`
       ${this.findOpen ? this.renderFindBar() : ''}
       <div class="scroll">
-        <div class="sizer" style="height:${this.totalLines * this.lineHeight}px"></div>
+        <div class="sizer" style="height:${extent * this.lineHeight}px"></div>
         <div class="rows">${rows}</div>
       </div>
     `
