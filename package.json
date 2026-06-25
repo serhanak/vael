@@ -8,6 +8,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -27,8 +29,10 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "@types/markdown-it": "^14.1.2",
+    "jsdom": "^29.1.1",
     "typescript": "^5",
-    "vite": "^6"
+    "vite": "^6",
+    "vitest": "^4.1.9"
   },
   "pnpm": {
     "overrides": {
