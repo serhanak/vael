@@ -1,21 +1,41 @@
 import { LitElement, html, css } from 'lit'
 import { customElement, state } from 'lit/decorators.js'
+import './status-bar'
 import '../editor/source-view'
 import type { SourceView } from '../editor/source-view'
-import { openFile, saveFile } from '../services/ipc'
+import {
+  openFile,
+  saveFile,
+  reopenWithEncoding,
+  confirmDiscard,
+  type Eol,
+  type Confidence,
+  type OpenResult,
+} from '../services/ipc'
 
 /**
- * Top-level application shell (M0): a minimal toolbar + a single CodeMirror
- * source view, wired to open/save via the IPC service layer.
+ * Top-level application shell (M1): toolbar + CodeMirror source view + an
+ * always-visible encoding/EOL status bar.
  *
- * Hard rule (see PLAN.md §3.2): the shell and editor never import
- * `@tauri-apps/*` directly — only `services/*` touches the IPC boundary.
+ * Hard rule (PLAN.md §3.2): the shell and editor never import `@tauri-apps/*`
+ * directly — only `services/*` touches the IPC boundary.
  */
 @customElement('vael-app')
 export class VaelApp extends LitElement {
   @state() private path: string | null = null
   @state() private dirty = false
   @state() private busy = false
+  @state() private error = ''
+
+  // Document encoding/EOL state (base label; BOM carried separately).
+  @state() private encoding = 'UTF-8'
+  @state() private hasBom = false
+  @state() private eol: Eol = 'LF'
+  @state() private confidence: Confidence = 'High'
+  @state() private canSave = true
+
+  @state() private line = 1
+  @state() private col = 1
 
   static styles = css`
     :host {
@@ -26,8 +46,7 @@ export class VaelApp extends LitElement {
       color: #e6e6e6;
       background: #1e1e22;
     }
-    header,
-    footer {
+    header {
       display: flex;
       align-items: center;
       gap: 8px;
@@ -35,12 +54,6 @@ export class VaelApp extends LitElement {
       background: #26262b;
       border-bottom: 1px solid #333;
       flex: 0 0 auto;
-    }
-    footer {
-      border-top: 1px solid #333;
-      border-bottom: none;
-      color: #9a9aa2;
-      font-size: 12px;
     }
     button {
       font: inherit;
@@ -65,6 +78,13 @@ export class VaelApp extends LitElement {
     .spacer {
       flex: 1;
     }
+    .error {
+      color: #ff8a8a;
+      max-width: 50%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     source-view {
       flex: 1 1 auto;
       min-height: 0;
@@ -75,31 +95,89 @@ export class VaelApp extends LitElement {
     return this.renderRoot.querySelector('source-view')
   }
 
+  private applyOpen(r: OpenResult) {
+    this.path = r.path
+    // Normalize "UTF-8-BOM" into base encoding + BOM flag.
+    this.encoding = r.encoding === 'UTF-8-BOM' ? 'UTF-8' : r.encoding
+    this.hasBom = r.hasBom
+    this.eol = r.eol
+    this.confidence = r.confidence
+    this.canSave = r.canSave
+    this.editor?.setText(r.content)
+    this.dirty = false // setText fires doc-changed synchronously; clear after
+  }
+
+  private fail(e: unknown) {
+    this.error = e instanceof Error ? e.message : String(e)
+  }
+
   private async onOpen() {
+    if (this.dirty && !(await confirmDiscard())) return
     this.busy = true
+    this.error = ''
     try {
-      const res = await openFile()
-      if (!res) return
-      this.path = res.path
-      this.editor?.setText(res.content)
-      this.dirty = false
+      const r = await openFile()
+      if (r) this.applyOpen(r)
+    } catch (e) {
+      this.fail(e)
     } finally {
       this.busy = false
     }
   }
 
   private async onSave() {
+    if (!this.canSave) return
     this.busy = true
+    this.error = ''
     try {
       const text = this.editor?.getText() ?? ''
-      const saved = await saveFile(this.path, text)
-      if (saved) {
-        this.path = saved
+      const meta = await saveFile(this.path, text, this.encoding, this.hasBom, this.eol)
+      if (meta) {
+        this.path = meta.path
         this.dirty = false
       }
+    } catch (e) {
+      this.fail(e)
     } finally {
       this.busy = false
     }
+  }
+
+  private async onReopen(e: Event) {
+    const encoding = (e as CustomEvent<string>).detail
+    if (!this.path) return
+    if (this.dirty && !(await confirmDiscard())) return
+    this.busy = true
+    this.error = ''
+    try {
+      const r = await reopenWithEncoding(this.path, encoding)
+      this.applyOpen(r) // reopen is a re-decode, not an edit → not dirty
+    } catch (err) {
+      this.fail(err)
+    } finally {
+      this.busy = false
+    }
+  }
+
+  private onConvert(e: Event) {
+    const label = (e as CustomEvent<string>).detail
+    const base = label === 'UTF-8-BOM' ? 'UTF-8' : label
+    this.encoding = base
+    // UTF-8 BOM is opt-in; UTF-16 must always carry a BOM (a BOM-less UTF-16
+    // file is undetectable on reopen → silent data loss); legacy has none.
+    this.hasBom = label === 'UTF-8-BOM' || base.startsWith('UTF-16')
+    this.canSave = !base.startsWith('UTF-32')
+    this.dirty = true
+  }
+
+  private onToggleBom(e: Event) {
+    this.hasBom = (e as CustomEvent<boolean>).detail
+    this.dirty = true
+  }
+
+  private onSetEol(e: Event) {
+    this.eol = (e as CustomEvent<Eol>).detail
+    this.dirty = true
   }
 
   render() {
@@ -107,12 +185,40 @@ export class VaelApp extends LitElement {
     return html`
       <header>
         <button @click=${this.onOpen} ?disabled=${this.busy}>Open…</button>
-        <button @click=${this.onSave} ?disabled=${this.busy}>Save</button>
+        <button
+          @click=${this.onSave}
+          ?disabled=${this.busy || !this.canSave}
+          title=${this.canSave ? 'Save' : 'Read-only encoding — convert to UTF-8 first'}
+        >
+          Save
+        </button>
         <span class="path">${name}${this.dirty ? ' •' : ''}</span>
         <span class="spacer"></span>
+        ${this.error ? html`<span class="error" title=${this.error}>⚠ ${this.error}</span>` : ''}
       </header>
-      <source-view @doc-changed=${() => (this.dirty = true)}></source-view>
-      <footer>vael — M0 scaffold</footer>
+
+      <source-view
+        @doc-changed=${() => (this.dirty = true)}
+        @cursor-changed=${(e: Event) => {
+          const d = (e as CustomEvent<{ line: number; col: number }>).detail
+          this.line = d.line
+          this.col = d.col
+        }}
+      ></source-view>
+
+      <status-bar
+        .encoding=${this.encoding}
+        .hasBom=${this.hasBom}
+        .eol=${this.eol}
+        .confidence=${this.confidence}
+        .canSave=${this.canSave}
+        .line=${this.line}
+        .col=${this.col}
+        @reopen=${this.onReopen}
+        @convert=${this.onConvert}
+        @toggle-bom=${this.onToggleBom}
+        @set-eol=${this.onSetEol}
+      ></status-bar>
     `
   }
 }

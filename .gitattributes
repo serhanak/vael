@@ -1,0 +1,9 @@
+# Normalize line endings to LF in the repo (fitting for an encoding-correct editor).
+* text=auto eol=lf
+
+# Binary assets must never be touched.
+*.png binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary

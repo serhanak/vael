@@ -8,12 +8,7 @@ import {
   rectangularSelection,
 } from '@codemirror/view'
 import type { Extension } from '@codemirror/state'
-import {
-  defaultKeymap,
-  history,
-  historyKeymap,
-  indentWithTab,
-} from '@codemirror/commands'
+import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { languages } from '@codemirror/language-data'
 import {
@@ -23,15 +18,20 @@ import {
   bracketMatching,
 } from '@codemirror/language'
 
+export interface EditorCallbacks {
+  /** Fired when the document content changes. */
+  onChange: () => void
+  /** Fired with the 1-based caret position when it moves or the doc changes. */
+  onCursor: (line: number, col: number) => void
+}
+
 /**
- * Base CodeMirror 6 extension set for the M0 source view.
+ * Base CodeMirror 6 extension set for the M0/M1 source view.
  *
  * Deliberately hand-composed (no `basic-setup`) so we can later swap pieces
  * in/out via Compartments for the large-file "degraded" tier (PLAN.md §6.b).
- *
- * @param onChange called whenever the document content changes.
  */
-export function baseExtensions(onChange: () => void): Extension[] {
+export function baseExtensions(cb: EditorCallbacks): Extension[] {
   return [
     lineNumbers(),
     highlightActiveLineGutter(),
@@ -60,7 +60,12 @@ export function baseExtensions(onChange: () => void): Extension[] {
       { dark: true },
     ),
     EditorView.updateListener.of((u) => {
-      if (u.docChanged) onChange()
+      if (u.docChanged) cb.onChange()
+      if (u.docChanged || u.selectionSet) {
+        const head = u.state.selection.main.head
+        const line = u.state.doc.lineAt(head)
+        cb.onCursor(line.number, head - line.from + 1)
+      }
     }),
   ]
 }

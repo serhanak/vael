@@ -1,3 +1,5 @@
+pub mod file;
+
 use serde::Serialize;
 
 /// Basic build info, exposed over IPC. Primarily a smoke-test that the

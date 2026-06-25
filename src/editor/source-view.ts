@@ -7,9 +7,10 @@ import { baseExtensions } from './cm-setup'
 /**
  * CodeMirror 6 source-editing view, hosted inside a Lit element.
  *
- * M0 scope: plain source editing with Markdown-aware highlighting. The
- * markdown text is the single source of truth (SSOT); later modes
- * (split preview, Crepe WYSIWYG, stream viewer) read/write the same text.
+ * The markdown/text is the single source of truth (SSOT); later modes (split
+ * preview, Crepe WYSIWYG, stream viewer) read/write the same text.
+ *
+ * Events: `doc-changed`, `cursor-changed` (detail: {line, col}).
  */
 @customElement('source-view')
 export class SourceView extends LitElement {
@@ -24,7 +25,6 @@ export class SourceView extends LitElement {
     .cm-host {
       height: 100%;
     }
-    /* CodeMirror fills the host */
     .cm-host .cm-editor {
       height: 100%;
     }
@@ -35,9 +35,11 @@ export class SourceView extends LitElement {
     this.view = new EditorView({
       state: EditorState.create({
         doc: '',
-        extensions: baseExtensions(() =>
-          this.dispatchEvent(new CustomEvent('doc-changed')),
-        ),
+        extensions: baseExtensions({
+          onChange: () => this.dispatchEvent(new CustomEvent('doc-changed')),
+          onCursor: (line, col) =>
+            this.dispatchEvent(new CustomEvent('cursor-changed', { detail: { line, col } })),
+        }),
       }),
       parent,
     })
@@ -49,6 +51,7 @@ export class SourceView extends LitElement {
     if (!view) return
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert: text },
+      selection: { anchor: 0 },
     })
   }
 
