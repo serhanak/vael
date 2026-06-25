@@ -93,6 +93,29 @@ export class PreviewPane extends LitElement {
       border-top: 1px solid #333;
       margin: 1.6em 0;
     }
+    .prose ul.contains-task-list {
+      list-style: none;
+      padding-left: 1.1em;
+    }
+    .prose .task-list-item {
+      list-style: none;
+    }
+    .prose .task-list-item input {
+      margin: 0 0.5em 0 -1.1em;
+      vertical-align: middle;
+    }
+    .prose .footnotes {
+      margin-top: 2.4em;
+      padding-top: 0.6em;
+      border-top: 1px solid #333;
+      font-size: 0.9em;
+      color: #a8a8b3;
+    }
+    .prose .footnote-ref a,
+    .prose .footnote-backref {
+      color: #79b0ff;
+      text-decoration: none;
+    }
   `
 
   render() {

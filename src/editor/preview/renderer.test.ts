@@ -35,6 +35,21 @@ describe('renderMarkdown — formatting', () => {
     expect(html).toContain('<blockquote>')
     expect(html).toContain('<li>one</li>')
   })
+
+  it('renders GFM task lists as checkboxes', () => {
+    const html = renderMarkdown('- [ ] todo\n- [x] done')
+    const boxes = html.match(/<input[^>]*type="checkbox"/g) ?? []
+    expect(boxes.length).toBe(2)
+    expect(html).toMatch(/<input[^>]*checked/) // the [x] item is checked
+    expect(html).toMatch(/<input[^>]*disabled/) // read-only in preview
+  })
+
+  it('renders footnotes with a reference and a definition', () => {
+    const html = renderMarkdown('Here is a note.[^1]\n\n[^1]: the note text')
+    expect(html).toMatch(/footnote-ref/) // inline reference marker
+    expect(html).toContain('the note text') // definition body
+    expect(html).toMatch(/<a[^>]*href="#fnref1"/) // back-reference link
+  })
 })
 
 describe('renderMarkdown — sanitization (security)', () => {
