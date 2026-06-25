@@ -146,6 +146,49 @@ export function closeStream(): Promise<void> {
   return invoke('close_stream')
 }
 
+// ---------------------------------------------------------------------------
+// In-file search (ripgrep engine — linear time, streams over multi-GB files)
+// ---------------------------------------------------------------------------
+
+/** A single search match (matches Rust `Hit`). */
+export interface Hit {
+  /** 0-based line number. */
+  line: number
+  byteOffset: number
+  preview: string
+}
+
+/** Result of a completed search (matches Rust `SearchSummary`). */
+export interface SearchSummary {
+  total: number
+  /** True if the hit cap was reached and matches were dropped. */
+  truncated: boolean
+}
+
+/**
+ * Search `path` for `pattern`. Matches stream in via `onHit` (batched) as they
+ * are found; the returned promise resolves with the totals when done. The
+ * engine is finite-automaton based, so even pathological regexes are linear
+ * time (no catastrophic backtracking).
+ */
+export function searchFile(
+  path: string,
+  pattern: string,
+  isRegex: boolean,
+  caseInsensitive: boolean,
+  onHit: (hits: Hit[]) => void,
+): Promise<SearchSummary> {
+  const channel = new Channel<Hit[]>()
+  channel.onmessage = onHit
+  return invoke<SearchSummary>('search_file', {
+    path,
+    pattern,
+    isRegex,
+    caseInsensitive,
+    onHit: channel,
+  })
+}
+
 /**
  * Ask before discarding unsaved edits (opening/reopening over a dirty buffer).
  * Returns true if the user chose to continue.

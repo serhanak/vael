@@ -28,6 +28,12 @@ tempfile = "3"
 # Large-file streaming (M1): zero-copy random access + SIMD newline scanning
 memmap2 = "0.9"
 memchr = "2"
+# Search (M1): ripgrep engine — linear-time regex (no catastrophic backtracking),
+# streaming over multi-GB files. The structural fix for Notepad++'s regex hangs.
+grep-searcher = "0.1"
+grep-regex = "0.1"
+grep-matcher = "0.1"
+regex = "1"
 
 [features]
 # Used by Tauri's mobile tooling; harmless on desktop.
