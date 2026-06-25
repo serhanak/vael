@@ -10,16 +10,29 @@ import { open as openDialog, save as saveDialog, ask } from '@tauri-apps/plugin-
 export type Eol = 'LF' | 'CRLF' | 'Mixed'
 export type Confidence = 'High' | 'Medium' | 'Low'
 
+/**
+ * Size-based handling tier (mirrors Rust `Tier`):
+ * - `full`         ≤ 50 MB  — every CM6 feature on
+ * - `degraded`     ≤ 1 GB   — CM6 with heavy extensions off (still editable)
+ * - `streamViewer` > 1 GB   — read-only windowed viewer, never fully loaded
+ */
+export type Tier = 'full' | 'degraded' | 'streamViewer'
+
 export interface OpenResult {
   path: string
+  /** Full text for `full`/`degraded`; empty for `streamViewer`. */
   content: string
   /** Detected encoding label, e.g. "UTF-8", "UTF-8-BOM", "Windows-1254". */
   encoding: string
   hasBom: boolean
   eol: Eol
   confidence: Confidence
-  /** false for UTF-32 (detect + read-only until converted). */
+  /** false for UTF-32 and for `streamViewer` (read-only until converted). */
   canSave: boolean
+  tier: Tier
+  byteLen: number
+  /** Known for eager tiers; null for `streamViewer` until indexed. */
+  lineCount: number | null
 }
 
 export interface FileMeta {

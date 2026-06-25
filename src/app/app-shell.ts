@@ -12,9 +12,23 @@ import {
   type Eol,
   type Confidence,
   type OpenResult,
+  type Tier,
 } from '../services/ipc'
 
 type Mode = 'source' | 'split'
+
+/** Human-readable byte size for the large-file banner/badge. */
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let v = n / 1024
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i]}`
+}
 
 /**
  * Top-level application shell (M1): toolbar + CodeMirror source view + an
@@ -41,6 +55,11 @@ export class VaelApp extends LitElement {
 
   @state() private line = 1
   @state() private col = 1
+
+  // Large-file handling tier (PLAN.md §6.b).
+  @state() private tier: Tier = 'full'
+  @state() private byteLen = 0
+  @state() private lineCount: number | null = null
 
   private previewTimer?: number
 
@@ -91,6 +110,22 @@ export class VaelApp extends LitElement {
       margin-left: 6px;
       color: #b9b9c2;
     }
+    .tier {
+      margin-left: 6px;
+      padding: 1px 7px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .tier.degraded {
+      background: #4a3a1a;
+      color: #ffcf8a;
+    }
+    .tier.streamViewer {
+      background: #1a3a4a;
+      color: #8ad6ff;
+    }
     .spacer {
       flex: 1;
     }
@@ -118,13 +153,58 @@ export class VaelApp extends LitElement {
       flex: 1 1 50%;
       min-width: 0;
     }
+    .big-placeholder {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      color: #b9b9c2;
+      text-align: center;
+      padding: 24px;
+    }
+    .big-placeholder .icon {
+      font-size: 34px;
+    }
+    .big-placeholder .hint {
+      color: #8a8a93;
+      max-width: 460px;
+      font-size: 12.5px;
+    }
   `
 
   private get editor(): SourceView | null {
     return this.renderRoot.querySelector('source-view')
   }
 
-  private applyOpen(r: OpenResult) {
+  private get tierLabel(): string {
+    return this.tier === 'degraded' ? 'large file' : 'huge file'
+  }
+
+  private get tierTitle(): string {
+    return this.tier === 'degraded'
+      ? `${formatBytes(this.byteLen)} — syntax highlighting and word-wrap are off for speed.`
+      : `${formatBytes(this.byteLen)} — opened in read-only streaming viewer.`
+  }
+
+  /** Placeholder shown for the >1 GB read-only tier (real viewer lands in B). */
+  private renderBigPlaceholder() {
+    return html`
+      <div class="big-placeholder">
+        <div class="icon">🗄️</div>
+        <div>
+          <strong>${this.path ?? 'file'}</strong> is ${formatBytes(this.byteLen)}.
+        </div>
+        <div class="hint">
+          Files over 1 GB open in a read-only streaming viewer so they never have
+          to fit in memory. The windowed viewer is coming up next.
+        </div>
+      </div>
+    `
+  }
+
+  private async applyOpen(r: OpenResult) {
     this.path = r.path
     // Normalize "UTF-8-BOM" into base encoding + BOM flag.
     this.encoding = r.encoding === 'UTF-8-BOM' ? 'UTF-8' : r.encoding
@@ -132,6 +212,20 @@ export class VaelApp extends LitElement {
     this.eol = r.eol
     this.confidence = r.confidence
     this.canSave = r.canSave
+    this.tier = r.tier
+    this.byteLen = r.byteLen
+    this.lineCount = r.lineCount
+    // Preview engines (markdown-it) and Crepe are unbounded; only the small
+    // `full` tier may show split preview. Force back to source for big files.
+    if (r.tier !== 'full' && this.mode !== 'source') this.mode = 'source'
+    // Let Lit mount the view that matches this tier before we drive it.
+    await this.updateComplete
+    if (r.tier === 'streamViewer') {
+      // The whole file is never loaded; the read-only viewer pulls windows.
+      this.dirty = false
+      return
+    }
+    this.editor?.setDegraded(r.tier === 'degraded')
     this.editor?.setText(r.content)
     this.dirty = false // setText fires doc-changed synchronously; clear after
     if (this.mode === 'split') this.previewMd = r.content
@@ -143,6 +237,8 @@ export class VaelApp extends LitElement {
 
   private onDocChanged() {
     this.dirty = true
+    // Keep the total-line readout live (CM6 reports it in O(1)).
+    if (this.tier !== 'streamViewer') this.lineCount = this.editor?.getLineCount() ?? null
     this.schedulePreview()
   }
 
@@ -165,7 +261,7 @@ export class VaelApp extends LitElement {
     this.error = ''
     try {
       const r = await openFile()
-      if (r) this.applyOpen(r)
+      if (r) await this.applyOpen(r)
     } catch (e) {
       this.fail(e)
     } finally {
@@ -199,7 +295,7 @@ export class VaelApp extends LitElement {
     this.error = ''
     try {
       const r = await reopenWithEncoding(this.path, encoding)
-      this.applyOpen(r) // reopen is a re-decode, not an edit → not dirty
+      await this.applyOpen(r) // reopen is a re-decode, not an edit → not dirty
     } catch (err) {
       this.fail(err)
     } finally {
@@ -244,27 +340,39 @@ export class VaelApp extends LitElement {
           <button class=${this.mode === 'source' ? 'active' : ''} @click=${() => this.setMode('source')}>
             Source
           </button>
-          <button class=${this.mode === 'split' ? 'active' : ''} @click=${() => this.setMode('split')}>
+          <button
+            class=${this.mode === 'split' ? 'active' : ''}
+            ?disabled=${this.tier !== 'full'}
+            title=${this.tier === 'full' ? 'Split preview' : 'Preview disabled for large files'}
+            @click=${() => this.setMode('split')}
+          >
             Split
           </button>
         </span>
         <span class="path">${name}${this.dirty ? ' •' : ''}</span>
+        ${this.tier !== 'full'
+          ? html`<span class="tier ${this.tier}" title=${this.tierTitle}>${this.tierLabel}</span>`
+          : ''}
         <span class="spacer"></span>
         ${this.error ? html`<span class="error" title=${this.error}>⚠ ${this.error}</span>` : ''}
       </header>
 
       <div class="workspace ${this.mode}">
-        <source-view
-          @doc-changed=${this.onDocChanged}
-          @cursor-changed=${(e: Event) => {
-            const d = (e as CustomEvent<{ line: number; col: number }>).detail
-            this.line = d.line
-            this.col = d.col
-          }}
-        ></source-view>
-        ${this.mode === 'split'
-          ? html`<preview-pane .markdown=${this.previewMd}></preview-pane>`
-          : ''}
+        ${this.tier === 'streamViewer'
+          ? this.renderBigPlaceholder()
+          : html`
+              <source-view
+                @doc-changed=${this.onDocChanged}
+                @cursor-changed=${(e: Event) => {
+                  const d = (e as CustomEvent<{ line: number; col: number }>).detail
+                  this.line = d.line
+                  this.col = d.col
+                }}
+              ></source-view>
+              ${this.mode === 'split'
+                ? html`<preview-pane .markdown=${this.previewMd}></preview-pane>`
+                : ''}
+            `}
       </div>
 
       <status-bar
@@ -275,6 +383,7 @@ export class VaelApp extends LitElement {
         .canSave=${this.canSave}
         .line=${this.line}
         .col=${this.col}
+        .lines=${this.lineCount}
         @reopen=${this.onReopen}
         @convert=${this.onConvert}
         @toggle-bom=${this.onToggleBom}

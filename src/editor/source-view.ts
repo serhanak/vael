@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit'
 import { customElement } from 'lit/decorators.js'
 import { EditorView } from '@codemirror/view'
 import { EditorState } from '@codemirror/state'
-import { baseExtensions } from './cm-setup'
+import { baseExtensions, setDegraded } from './cm-setup'
 
 /**
  * CodeMirror 6 source-editing view, hosted inside a Lit element.
@@ -15,6 +15,7 @@ import { baseExtensions } from './cm-setup'
 @customElement('source-view')
 export class SourceView extends LitElement {
   private view?: EditorView
+  private degraded = false
 
   static styles = css`
     :host {
@@ -35,11 +36,14 @@ export class SourceView extends LitElement {
     this.view = new EditorView({
       state: EditorState.create({
         doc: '',
-        extensions: baseExtensions({
-          onChange: () => this.dispatchEvent(new CustomEvent('doc-changed')),
-          onCursor: (line, col) =>
-            this.dispatchEvent(new CustomEvent('cursor-changed', { detail: { line, col } })),
-        }),
+        extensions: baseExtensions(
+          {
+            onChange: () => this.dispatchEvent(new CustomEvent('doc-changed')),
+            onCursor: (line, col) =>
+              this.dispatchEvent(new CustomEvent('cursor-changed', { detail: { line, col } })),
+          },
+          this.degraded,
+        ),
       }),
       parent,
     })
@@ -55,9 +59,24 @@ export class SourceView extends LitElement {
     })
   }
 
+  /**
+   * Switch the editor between full and degraded (large-file) feature sets.
+   * Idempotent; the document and history survive the switch.
+   */
+  setDegraded(degraded: boolean) {
+    if (degraded === this.degraded) return
+    this.degraded = degraded
+    if (this.view) setDegraded(this.view, degraded)
+  }
+
   /** Current document text. */
   getText(): string {
     return this.view?.state.doc.toString() ?? ''
+  }
+
+  /** Total number of lines in the document (CM6 tracks this in O(1)). */
+  getLineCount(): number {
+    return this.view?.state.doc.lines ?? 1
   }
 
   render() {

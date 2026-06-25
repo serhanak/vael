@@ -31,6 +31,8 @@ export class StatusBar extends LitElement {
   @property({ type: Boolean }) canSave = true
   @property({ type: Number }) line = 1
   @property({ type: Number }) col = 1
+  /** Total line count; null while a large file is still being indexed. */
+  @property({ type: Number }) lines: number | null = null
 
   static styles = css`
     :host {
@@ -138,6 +140,9 @@ export class StatusBar extends LitElement {
     const lowConf = this.confidence !== 'High'
     return html`
       <span class="pos">Ln ${this.line}, Col ${this.col}</span>
+      ${this.lines !== null
+        ? html`<span class="pos">· ${this.lines.toLocaleString()} lines</span>`
+        : ''}
       <span class="spacer"></span>
 
       <details class="menu">
