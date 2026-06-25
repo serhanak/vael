@@ -102,6 +102,8 @@ export interface LinesChunk {
 
 /** Background line-index build progress (matches Rust StreamProgress). */
 export interface StreamProgress {
+  /** The file this progress is for; ignore events for any other path. */
+  path: string
   lines: number
   done: boolean
 }
@@ -134,6 +136,14 @@ export function readLines(
 /** Subscribe to background index-build progress for the active stream. */
 export function onStreamProgress(cb: (p: StreamProgress) => void): Promise<UnlistenFn> {
   return listen<StreamProgress>('stream-progress', (e) => cb(e.payload))
+}
+
+/**
+ * Close the active streaming session (frees the backend memory-map and aborts
+ * its background scan). Call when navigating away from a streamed file.
+ */
+export function closeStream(): Promise<void> {
+  return invoke('close_stream')
 }
 
 /**

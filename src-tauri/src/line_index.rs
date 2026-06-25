@@ -31,9 +31,6 @@ impl SparseLineIndex {
         }
     }
 
-    /// Currently consumed only by tests; the running count reaches the frontend
-    /// via `stream-progress` events rather than this accessor.
-    #[allow(dead_code)]
     pub fn total_lines(&self) -> u64 {
         self.total_lines
     }

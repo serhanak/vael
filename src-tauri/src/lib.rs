@@ -15,6 +15,7 @@ pub fn run() {
             commands::file::save_file,
             commands::bigfile::start_stream,
             commands::bigfile::read_lines,
+            commands::bigfile::close_stream,
         ])
         .run(tauri::generate_context!())
         .expect("error while running vael");

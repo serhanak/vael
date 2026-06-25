@@ -6,7 +6,7 @@ use std::io::Read;
 
 use serde::Serialize;
 
-use crate::encoding::{analyze, encode_for_save, Eol};
+use crate::encoding::{analyze, encode_for_save, is_streamable_label, Eol};
 
 /// Size-based handling tier (PLAN.md §6.b, docs/design/02-large-file.md §1).
 /// The thresholds are deliberate: `Full` keeps every CM6 feature; `Degraded`
@@ -95,6 +95,13 @@ fn open_inner(path: String, forced: Option<&str>) -> Result<OpenResult, String> 
         // hand the frontend a windowed read-only viewer instead.
         let head = read_head(&path, 64 * 1024).map_err(|e| format!("Could not read {path}: {e}"))?;
         let a = analyze(&head, forced);
+        if !is_streamable_label(&a.encoding) {
+            return Err(format!(
+                "{} files over 1 GB aren't supported by the streaming viewer yet \
+                 (its newline isn't a single byte). Reopen with a UTF-8 or single-byte encoding.",
+                a.encoding
+            ));
+        }
         return Ok(OpenResult {
             path,
             content: String::new(),

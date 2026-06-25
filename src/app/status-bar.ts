@@ -29,6 +29,8 @@ export class StatusBar extends LitElement {
   @property() eol: Eol = 'LF'
   @property() confidence: Confidence = 'High'
   @property({ type: Boolean }) canSave = true
+  /** Read-only viewer (the >1 GB stream tier): no convert/BOM/EOL editing. */
+  @property({ type: Boolean }) readOnly = false
   @property({ type: Number }) line = 1
   @property({ type: Number }) col = 1
   /** Total line count; null while a large file is still being indexed. */
@@ -150,41 +152,49 @@ export class StatusBar extends LitElement {
           ${this.displayEncoding}${lowConf ? ' ⚠' : ''}
         </summary>
         <div class="panel">
-          ${!this.canSave
-            ? html`<p class="note">Read-only encoding — convert to UTF-8 to edit &amp; save.</p>`
-            : ''}
+          ${this.readOnly
+            ? html`<p class="note">Read-only — file is too large to edit. Use “Reopen with…” to fix the decoded encoding.</p>`
+            : !this.canSave
+              ? html`<p class="note">Read-only encoding — convert to UTF-8 to edit &amp; save.</p>`
+              : ''}
           <p class="grp">Reopen with…</p>
           ${ENCODINGS.map(
             (e) => html`<button @click=${() => this.emit('reopen', e)}>${e}</button>`,
           )}
-          <p class="grp">Convert to…</p>
-          ${ENCODINGS.map(
-            (e) => html`<button @click=${() => this.emit('convert', e)}>${e}</button>`,
-          )}
-          ${this.bomToggleable
-            ? html`<label class="bom">
-                <input
-                  type="checkbox"
-                  .checked=${this.hasBom}
-                  @change=${(ev: Event) =>
-                    this.emit('toggle-bom', (ev.target as HTMLInputElement).checked)}
-                />
-                Byte-order mark (BOM)
-              </label>`
-            : ''}
+          ${this.readOnly
+            ? ''
+            : html`
+                <p class="grp">Convert to…</p>
+                ${ENCODINGS.map(
+                  (e) => html`<button @click=${() => this.emit('convert', e)}>${e}</button>`,
+                )}
+                ${this.bomToggleable
+                  ? html`<label class="bom">
+                      <input
+                        type="checkbox"
+                        .checked=${this.hasBom}
+                        @change=${(ev: Event) =>
+                          this.emit('toggle-bom', (ev.target as HTMLInputElement).checked)}
+                      />
+                      Byte-order mark (BOM)
+                    </label>`
+                  : ''}
+              `}
         </div>
       </details>
 
-      <details class="menu">
-        <summary class="chip ${this.eol === 'Mixed' ? 'warn' : ''}" title="Line endings">
-          ${this.eol}
-        </summary>
-        <div class="panel">
-          <p class="grp">Line endings</p>
-          <button @click=${() => this.emit('set-eol', 'LF')}>LF — Unix (\\n)</button>
-          <button @click=${() => this.emit('set-eol', 'CRLF')}>CRLF — Windows (\\r\\n)</button>
-        </div>
-      </details>
+      ${this.readOnly
+        ? html`<span class="chip" title="Line endings (read-only)">${this.eol}</span>`
+        : html`<details class="menu">
+            <summary class="chip ${this.eol === 'Mixed' ? 'warn' : ''}" title="Line endings">
+              ${this.eol}
+            </summary>
+            <div class="panel">
+              <p class="grp">Line endings</p>
+              <button @click=${() => this.emit('set-eol', 'LF')}>LF — Unix (\\n)</button>
+              <button @click=${() => this.emit('set-eol', 'CRLF')}>CRLF — Windows (\\r\\n)</button>
+            </div>
+          </details>`}
     `
   }
 }

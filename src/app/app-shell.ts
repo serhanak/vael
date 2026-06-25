@@ -12,6 +12,7 @@ import {
   confirmDiscard,
   startStream,
   onStreamProgress,
+  closeStream,
   type Eol,
   type Confidence,
   type OpenResult,
@@ -202,10 +203,22 @@ export class VaelApp extends LitElement {
       await this.startStreamFor(r.path, this.encoding)
       return
     }
+    // Entering a non-stream tier: drop any prior stream subscription and free
+    // the backend memory-map / abort its scan (else a multi-GB mapping lingers
+    // and its stale progress could clobber this file's line count).
+    this.teardownStream()
     this.editor?.setDegraded(r.tier === 'degraded')
     this.editor?.setText(r.content)
     this.dirty = false // setText fires doc-changed synchronously; clear after
     if (this.mode === 'split') this.previewMd = r.content
+  }
+
+  /** Unsubscribe from stream progress and close the backend session, if any. */
+  private teardownStream() {
+    if (!this.streamUnlisten) return
+    this.streamUnlisten()
+    this.streamUnlisten = undefined
+    void closeStream()
   }
 
   /**
@@ -216,6 +229,8 @@ export class VaelApp extends LitElement {
   private async startStreamFor(path: string, encoding: string) {
     this.streamUnlisten?.()
     this.streamUnlisten = await onStreamProgress((p) => {
+      // Ignore progress from a previous file's still-running scan.
+      if (p.path !== this.path) return
       this.lineCount = p.lines
     })
     await startStream(path, encoding)
@@ -227,7 +242,7 @@ export class VaelApp extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback()
-    this.streamUnlisten?.()
+    this.teardownStream()
   }
 
   private onDocChanged() {
@@ -264,8 +279,16 @@ export class VaelApp extends LitElement {
     }
   }
 
+  /** The >1 GB stream tier is a read-only viewer: it has no editor in the DOM
+   *  and must never be saved (an empty save would truncate the file). */
+  private get readOnly(): boolean {
+    return this.tier === 'streamViewer'
+  }
+
   private async onSave() {
-    if (!this.canSave) return
+    // Guard against saving the streaming viewer: there is no <source-view> in
+    // the DOM, so getText() would be '' and overwrite the multi-GB file empty.
+    if (this.readOnly || !this.canSave) return
     this.busy = true
     this.error = ''
     try {
@@ -299,6 +322,10 @@ export class VaelApp extends LitElement {
   }
 
   private onConvert(e: Event) {
+    // Convert means "edit the bytes on next save" — meaningless for the
+    // read-only stream tier, and re-enabling canSave there is the empty-save
+    // data-loss path. To change how a huge file is *decoded*, use Reopen.
+    if (this.readOnly) return
     const label = (e as CustomEvent<string>).detail
     const base = label === 'UTF-8-BOM' ? 'UTF-8' : label
     this.encoding = base
@@ -310,11 +337,13 @@ export class VaelApp extends LitElement {
   }
 
   private onToggleBom(e: Event) {
+    if (this.readOnly) return
     this.hasBom = (e as CustomEvent<boolean>).detail
     this.dirty = true
   }
 
   private onSetEol(e: Event) {
+    if (this.readOnly) return
     this.eol = (e as CustomEvent<Eol>).detail
     this.dirty = true
   }
@@ -380,6 +409,7 @@ export class VaelApp extends LitElement {
         .eol=${this.eol}
         .confidence=${this.confidence}
         .canSave=${this.canSave}
+        .readOnly=${this.readOnly}
         .line=${this.line}
         .col=${this.col}
         .lines=${this.lineCount}

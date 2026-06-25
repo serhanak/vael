@@ -131,6 +131,16 @@ pub fn encoding_for_label(label: &str) -> Option<&'static Encoding> {
     }
 }
 
+/// Whether a file in this encoding can be safely streamed by splitting on the
+/// lone `\n` (0x0A) byte. UTF-16/UTF-32 encode the newline as a multi-byte unit
+/// (e.g. `0A 00`), so 0x0A splitting misaligns byte parity → mojibake; and
+/// encoding_rs has no UTF-32 codec at all. The >1 GB stream viewer refuses
+/// these rather than show garbage. UTF-8 and single-byte legacy charsets (the
+/// vast majority of multi-GB logs) are streamable.
+pub fn is_streamable_label(label: &str) -> bool {
+    !(label.starts_with("UTF-16") || label.starts_with("UTF-32"))
+}
+
 /// encoding_rs Encoding → friendly UI label.
 pub fn label_for_encoding(enc: &'static Encoding) -> String {
     match enc.name() {

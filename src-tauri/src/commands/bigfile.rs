@@ -5,6 +5,7 @@
 //! sub-100 MB RAM. The mapped file is never fully materialized in the WebView.
 
 use std::fs::File;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use memmap2::Mmap;
@@ -12,7 +13,7 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::encoding::encoding_for_label;
+use crate::encoding::{encoding_for_label, is_streamable_label};
 use crate::line_index::SparseLineIndex;
 
 /// Anchor every 1000th line (see SparseLineIndex memory rationale).
@@ -33,12 +34,22 @@ pub struct StreamSession {
     index: Arc<RwLock<SparseLineIndex>>,
 }
 
+/// Shared streaming state. `generation` is bumped every time a session starts
+/// or closes; the background scan checks it so a superseded scan self-aborts
+/// (frees its mmap, stops wasting CPU) instead of running to completion and
+/// emitting stale progress for a file the user already navigated away from.
 #[derive(Default)]
-pub struct StreamState(pub Mutex<Option<StreamSession>>);
+pub struct StreamState {
+    session: Mutex<Option<StreamSession>>,
+    generation: Arc<AtomicU64>,
+}
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamProgress {
+    /// The file this progress belongs to — the frontend ignores events whose
+    /// path isn't the currently-open one (stale scan of a previous file).
+    pub path: String,
     /// Lines counted so far (or the exact total when `done`).
     pub lines: u64,
     pub done: bool,
@@ -64,6 +75,12 @@ pub fn start_stream(
     app: AppHandle,
     state: State<'_, StreamState>,
 ) -> Result<(), String> {
+    // Defense in depth: the open path already rejects these, but never decode a
+    // multi-byte-newline encoding by splitting on a lone 0x0A.
+    if !is_streamable_label(&encoding) {
+        return Err(format!("{encoding} is not supported by the streaming viewer."));
+    }
+
     let file = File::open(&path).map_err(|e| format!("Could not open {path}: {e}"))?;
     // SAFETY: a read-only shared mapping. If the file is changed/truncated by
     // another process the mapping can fault; a file watcher (later increment)
@@ -73,8 +90,13 @@ pub fn start_stream(
     let mmap = Arc::new(mmap);
     let index = Arc::new(RwLock::new(SparseLineIndex::new(STRIDE)));
 
-    *state.0.lock().unwrap() = Some(StreamSession {
-        path,
+    // Bump the generation: any scan from a previous session will see the change
+    // and bail. This scan owns `my_gen`.
+    let generation = Arc::clone(&state.generation);
+    let my_gen = generation.fetch_add(1, Ordering::SeqCst) + 1;
+
+    *state.session.lock().unwrap() = Some(StreamSession {
+        path: path.clone(),
         encoding,
         mmap: Arc::clone(&mmap),
         index: Arc::clone(&index),
@@ -86,24 +108,47 @@ pub fn start_stream(
     std::thread::spawn(move || {
         let data: &[u8] = &mmap;
         let mut count: u64 = 0;
-        let mut next_progress = PROGRESS_EVERY;
+        // Emit the first event early (after one stride) so the viewer becomes
+        // scrollable within milliseconds; then fall back to the coarse cadence.
+        let mut next_progress = STRIDE;
         for pos in memchr::memchr_iter(b'\n', data) {
             count += 1; // line `count` begins at pos + 1
             if count % STRIDE == 0 {
-                let mut idx = index.write().unwrap();
-                idx.observe_line_start(count, (pos + 1) as u64);
+                // Stop promptly if a newer session superseded us.
+                if generation.load(Ordering::SeqCst) != my_gen {
+                    return;
+                }
+                index.write().unwrap().observe_line_start(count, (pos + 1) as u64);
             }
             if count >= next_progress {
-                let _ = app.emit("stream-progress", StreamProgress { lines: count, done: false });
-                next_progress += PROGRESS_EVERY;
+                let _ = app.emit(
+                    "stream-progress",
+                    StreamProgress { path: path.clone(), lines: count, done: false },
+                );
+                next_progress = count + PROGRESS_EVERY;
             }
+        }
+        if generation.load(Ordering::SeqCst) != my_gen {
+            return;
         }
         let total = count + 1; // include the final (possibly empty) line
         index.write().unwrap().finish(total);
-        let _ = app.emit("stream-progress", StreamProgress { lines: total, done: true });
+        let _ = app.emit(
+            "stream-progress",
+            StreamProgress { path, lines: total, done: true },
+        );
     });
 
     Ok(())
+}
+
+/// Close the active streaming session: bump the generation (any running scan
+/// self-aborts and drops its mmap) and drop the stored session. Called when the
+/// user opens a non-streaming file so a multi-GB mapping isn't kept resident.
+#[tauri::command]
+pub fn close_stream(state: State<'_, StreamState>) {
+    state.generation.fetch_add(1, Ordering::SeqCst);
+    *state.session.lock().unwrap() = None;
 }
 
 /// Decode one line's bytes (newline already excluded). Strips a trailing CR so
@@ -131,11 +176,19 @@ fn decode_window(
     start_line: u64,
     count: u64,
 ) -> (Vec<String>, bool) {
+    let total = index.total_lines();
     let mut off = index.offset_of_line(data, start_line) as usize;
     let mut out = Vec::new();
     let mut reached_eof = false;
     while (out.len() as u64) < count {
+        let cur = start_line + out.len() as u64;
         if off >= data.len() {
+            // A file ending in '\n' (or an empty file) has a final empty line at
+            // index total-1 with no bytes to decode. Emit it once so the row the
+            // scrollbar advertises isn't stuck on the loading glyph forever.
+            if cur < total && cur == total - 1 && (data.is_empty() || data.last() == Some(&b'\n')) {
+                out.push(String::new());
+            }
             reached_eof = true;
             break;
         }
@@ -153,7 +206,7 @@ fn decode_window(
                 s
             }
         };
-        if start_line + out.len() as u64 == 0 {
+        if cur == 0 {
             line = line.trim_start_matches('\u{FEFF}').to_string();
         }
         out.push(line);
@@ -175,7 +228,7 @@ pub fn read_lines(
 ) -> Result<(), String> {
     // Snapshot the session, then release the state lock for the whole scan.
     let (mmap, enc_label, index) = {
-        let guard = state.0.lock().unwrap();
+        let guard = state.session.lock().unwrap();
         let s = guard.as_ref().ok_or("no active stream session")?;
         if s.path != path {
             return Err("stream session path mismatch".into());
@@ -183,7 +236,12 @@ pub fn read_lines(
         (Arc::clone(&s.mmap), s.encoding.clone(), Arc::clone(&s.index))
     };
 
-    let enc = encoding_for_label(&enc_label).unwrap_or(encoding_rs::UTF_8);
+    // Reject (rather than silently UTF-8-fallback) any encoding we can't split
+    // on a lone 0x0A; the open path blocks these, this is defense in depth.
+    let enc = match encoding_for_label(&enc_label) {
+        Some(e) if is_streamable_label(&enc_label) => e,
+        _ => return Err(format!("{enc_label} is not supported by the streaming viewer.")),
+    };
     let data: &[u8] = &mmap;
 
     let (lines, eof) = {
@@ -249,11 +307,25 @@ mod tests {
 
     #[test]
     fn window_past_eof_sets_flag() {
-        let data = b"one\ntwo\nthree"; // last line unterminated
+        let data = b"one\ntwo\nthree"; // last line unterminated → no phantom line
         let idx = index_of(data, 4);
         let (lines, eof) = decode_window(data, &idx, UTF_8, 0, 100);
         assert_eq!(lines, vec!["one", "two", "three"]);
         assert!(eof);
+    }
+
+    #[test]
+    fn window_emits_trailing_empty_line() {
+        let data = b"a\nb\n"; // ends in newline → 3 visual lines: "a","b",""
+        let idx = index_of(data, 4);
+        assert_eq!(idx.total_lines(), 3);
+        let (lines, eof) = decode_window(data, &idx, UTF_8, 0, 100);
+        assert_eq!(lines, vec!["a", "b", ""]);
+        assert!(eof);
+        // Requesting only the trailing line yields one empty string, not nothing
+        // (otherwise that row is stuck on the loading glyph forever).
+        let (last, _) = decode_window(data, &idx, UTF_8, 2, 1);
+        assert_eq!(last, vec![""]);
     }
 
     #[test]
