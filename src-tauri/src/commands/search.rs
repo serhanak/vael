@@ -9,9 +9,11 @@
 
 use grep_regex::RegexMatcherBuilder;
 use grep_matcher::LineTerminator;
-use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkMatch};
+use grep_searcher::{Encoding, Searcher, SearcherBuilder, Sink, SinkMatch};
 use serde::Serialize;
 use tauri::ipc::Channel;
+
+use crate::encoding::encoding_for_label;
 
 /// Default ceiling on returned hits so a pattern matching every line of a
 /// 100 M-line file can't flood the UI / exhaust memory. Surfaced as `truncated`.
@@ -65,11 +67,23 @@ fn build_matcher(
 
 /// A line-numbered searcher whose terminator strips an optional `\r` (so CRLF
 /// and LF files both work, and `$` matches before `\r\n`).
-fn build_searcher() -> Searcher {
-    SearcherBuilder::new()
-        .line_number(true)
-        .line_terminator(LineTerminator::crlf())
-        .build()
+///
+/// `encoding` is the document's label: for a legacy charset the searcher
+/// transcodes the haystack to UTF-8 before matching, so a non-ASCII query
+/// matches the on-disk bytes (not the UTF-8 bytes of the query) and the preview
+/// is real text rather than mojibake. UTF-8 (and an unknown label) take the
+/// engine's native ASCII-compatible path with automatic BOM sniffing.
+fn build_searcher(encoding: &str) -> Result<Searcher, String> {
+    let mut b = SearcherBuilder::new();
+    b.line_number(true).line_terminator(LineTerminator::crlf());
+    if let Some(enc) = encoding_for_label(encoding) {
+        if enc.name() != "UTF-8" {
+            let ge = Encoding::new(enc.name())
+                .map_err(|e| format!("Unsupported search encoding {encoding}: {e}"))?;
+            b.encoding(Some(ge));
+        }
+    }
+    Ok(b.build())
 }
 
 fn make_hit(m: &SinkMatch<'_>) -> Hit {
@@ -90,6 +104,7 @@ pub fn search_bytes(
     pattern: &str,
     is_regex: bool,
     case_insensitive: bool,
+    encoding: &str,
     max_hits: u64,
 ) -> Result<(Vec<Hit>, bool), String> {
     let matcher = build_matcher(pattern, is_regex, case_insensitive)?;
@@ -119,7 +134,7 @@ pub fn search_bytes(
         max: max_hits,
         truncated: false,
     };
-    build_searcher()
+    build_searcher(encoding)?
         .search_slice(&matcher, data, &mut sink)
         .map_err(|e| e.to_string())?;
     Ok((sink.hits, sink.truncated))
@@ -134,6 +149,7 @@ pub fn search_file(
     pattern: String,
     is_regex: bool,
     case_insensitive: bool,
+    encoding: String,
     on_hit: Channel<Vec<Hit>>,
 ) -> Result<SearchSummary, String> {
     let matcher = build_matcher(&pattern, is_regex, case_insensitive)?;
@@ -179,7 +195,7 @@ pub fn search_file(
         max: MAX_HITS,
         truncated: false,
     };
-    build_searcher()
+    build_searcher(&encoding)?
         .search_path(&matcher, &path, &mut sink)
         .map_err(|e| format!("Search failed: {e}"))?;
     sink.flush().map_err(|e| e.to_string())?;
@@ -198,7 +214,7 @@ mod tests {
 
     #[test]
     fn literal_match_reports_zero_based_lines() {
-        let (hits, trunc) = search_bytes(HAYSTACK, "alpha", false, false, 100).unwrap();
+        let (hits, trunc) = search_bytes(HAYSTACK, "alpha", false, false, "UTF-8", 100).unwrap();
         assert!(!trunc);
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].line, 0);
@@ -211,44 +227,44 @@ mod tests {
     fn literal_query_is_not_a_regex() {
         // The '.' must match a literal dot, not any char.
         let data = b"a.b\naxb\n";
-        let (hits, _) = search_bytes(data, "a.b", false, false, 100).unwrap();
+        let (hits, _) = search_bytes(data, "a.b", false, false, "UTF-8", 100).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].preview, "a.b");
     }
 
     #[test]
     fn regex_mode_matches_pattern() {
-        let (hits, _) = search_bytes(HAYSTACK, r"^\w+\s+t", true, false, 100).unwrap();
+        let (hits, _) = search_bytes(HAYSTACK, r"^\w+\s+t", true, false, "UTF-8", 100).unwrap();
         // "Beta two" and "gamma three" start with word + space + 't'.
         assert_eq!(hits.iter().map(|h| h.line).collect::<Vec<_>>(), vec![1, 2]);
     }
 
     #[test]
     fn case_insensitive_matches_mixed_case() {
-        let (ci, _) = search_bytes(HAYSTACK, "delta", false, true, 100).unwrap();
+        let (ci, _) = search_bytes(HAYSTACK, "delta", false, true, "UTF-8", 100).unwrap();
         assert_eq!(ci.len(), 1);
         assert_eq!(ci[0].line, 4);
-        let (cs, _) = search_bytes(HAYSTACK, "delta", false, false, 100).unwrap();
+        let (cs, _) = search_bytes(HAYSTACK, "delta", false, false, "UTF-8", 100).unwrap();
         assert!(cs.is_empty());
     }
 
     #[test]
     fn hit_cap_truncates() {
-        let (hits, trunc) = search_bytes(HAYSTACK, "a", false, false, 1).unwrap();
+        let (hits, trunc) = search_bytes(HAYSTACK, "a", false, false, "UTF-8", 1).unwrap();
         assert_eq!(hits.len(), 1);
         assert!(trunc);
     }
 
     #[test]
     fn invalid_regex_is_an_error() {
-        assert!(search_bytes(HAYSTACK, "(unclosed", true, false, 100).is_err());
+        assert!(search_bytes(HAYSTACK, "(unclosed", true, false, "UTF-8", 100).is_err());
     }
 
     #[test]
     fn end_anchor_matches_on_crlf_lines() {
         // Windows CRLF: `foo$` must match despite the trailing \r before \n.
         let data = b"foo\r\nbar\r\nfoo\r\n";
-        let (hits, _) = search_bytes(data, "foo$", true, false, 100).unwrap();
+        let (hits, _) = search_bytes(data, "foo$", true, false, "UTF-8", 100).unwrap();
         assert_eq!(hits.iter().map(|h| h.line).collect::<Vec<_>>(), vec![0, 2]);
         assert_eq!(hits[0].preview, "foo"); // preview has no trailing \r
     }
@@ -258,7 +274,24 @@ mod tests {
         // The classic ReDoS trigger. A backtracking engine hangs on this; the
         // ripgrep engine returns promptly (no match), proving linear-time.
         let data = b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!\n";
-        let (hits, _) = search_bytes(data, r"(a+)+$", true, false, 100).unwrap();
+        let (hits, _) = search_bytes(data, r"(a+)+$", true, false, "UTF-8", 100).unwrap();
         assert!(hits.is_empty()); // '!' before EOL → no match, and crucially: fast
+    }
+
+    #[test]
+    fn legacy_charset_matches_non_ascii_and_previews_text() {
+        use encoding_rs::WINDOWS_1252;
+        // Bytes on disk are Windows-1252 (é = 0xE9, ï = 0xEF, …). The query is a
+        // normal UTF-8 string; without encoding-aware search the UTF-8 bytes of
+        // "café" would never match the 0xE9 byte, and the preview would be mojibake.
+        let (bytes, _, _) = WINDOWS_1252.encode("café au lait\nplain ascii\nnaïve résumé\n");
+        let (hits, _) = search_bytes(&bytes, "café", false, false, "Windows-1252", 100).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].line, 0);
+        assert_eq!(hits[0].preview, "café au lait"); // decoded text, not mojibake
+        // A term that only exists once the bytes are correctly decoded.
+        let (hits2, _) = search_bytes(&bytes, "résumé", false, false, "Windows-1252", 100).unwrap();
+        assert_eq!(hits2.iter().map(|h| h.line).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(hits2[0].preview, "naïve résumé");
     }
 }

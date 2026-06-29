@@ -272,9 +272,16 @@ export class StreamViewer extends LitElement {
     this.searching = true
     const collected: Hit[] = []
     try {
-      const summary = await searchFile(this.path, q, this.useRegex, this.caseInsensitive, (batch) => {
-        if (seq === this.searchSeq) collected.push(...batch)
-      })
+      const summary = await searchFile(
+        this.path,
+        q,
+        this.useRegex,
+        this.caseInsensitive,
+        this.encoding,
+        (batch) => {
+          if (seq === this.searchSeq) collected.push(...batch)
+        },
+      )
       if (seq !== this.searchSeq) return // a newer search superseded us
       this.hits = collected
       this.maxHitLine = collected.reduce((m, h) => Math.max(m, h.line), 0)

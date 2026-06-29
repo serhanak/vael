@@ -175,6 +175,7 @@ export function searchFile(
   pattern: string,
   isRegex: boolean,
   caseInsensitive: boolean,
+  encoding: string,
   onHit: (hits: Hit[]) => void,
 ): Promise<SearchSummary> {
   const channel = new Channel<Hit[]>()
@@ -184,6 +185,7 @@ export function searchFile(
     pattern,
     isRegex,
     caseInsensitive,
+    encoding,
     onHit: channel,
   })
 }
