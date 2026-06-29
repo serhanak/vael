@@ -25,6 +25,9 @@ importers:
       '@codemirror/language-data':
         specifier: ^6
         version: 6.5.2
+      '@codemirror/search':
+        specifier: ^6
+        version: 6.7.1
       '@codemirror/state':
         specifier: '6'
         version: 6.7.0
@@ -176,6 +179,9 @@ packages:
 
   '@codemirror/lint@6.9.7':
     resolution: {integrity: sha512-28/+iWLYxKxsvGYhSYL7zaCZqLz5+FFFDq9tVsvGv9kv8RY4fFAchJ5WX9M3YrrRlTIsECjsXPqeNgnSmNP2dg==}
+
+  '@codemirror/search@6.7.1':
+    resolution: {integrity: sha512-uMe5UO6PamJtSHrXhhHOzSX3ReWtiJrva6GnPMwSOrZtiExb5X5eExhr2OUZQVvdxPsKpY3Ro2mFbQadpPWmHA==}
 
   '@codemirror/state@6.7.0':
     resolution: {integrity: sha512-Zbl9NyscLMZkfXPQnNAIIAFftidrA1UbcJEIMp24C0Bukc2I5T8wJS0wsXYsnDOqCFJUeJ1BITGNs5CqPDSmSg==}
@@ -1342,6 +1348,12 @@ snapshots:
       '@codemirror/language': 6.12.3
 
   '@codemirror/lint@6.9.7':
+    dependencies:
+      '@codemirror/state': 6.7.0
+      '@codemirror/view': 6.43.2
+      crelt: 1.0.6
+
+  '@codemirror/search@6.7.1':
     dependencies:
       '@codemirror/state': 6.7.0
       '@codemirror/view': 6.43.2

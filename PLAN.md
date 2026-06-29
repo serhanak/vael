@@ -388,7 +388,7 @@ update-available   { version, notes }    // updater plugin
 
 ### 9.2 MVP Özellikleri (önceliklendirilmiş, kabul kriterli)
 
-> Durum kolonu (2026-06-25, branch `feat/m1-encoding`): ✅ tamam · ◑ kısmi · ⬜ başlanmadı. Birim testler: 37 Rust + 12 vitest yeşil.
+> Durum kolonu (2026-06-29, branch `feat/m1-encoding`): ✅ tamam · ◑ kısmi · ⬜ başlanmadı. Birim testler: 38 Rust + 12 vitest yeşil.
 
 | # | Özellik | Öncelik | Durum | Kabul kriteri |
 |---|---|---|---|---|
@@ -396,8 +396,8 @@ update-available   { version, notes }    // updater plugin
 | 2 | CM6 source modu + syntax highlight (lazy diller) | P0 | ✅ | Full tier'da highlight + lazy `language-data`; degraded'da Compartment ile kapanır. |
 | 3 | Split live-preview (markdown-it + KaTeX + Prism) | P0 | ◑ | markdown-it→DOMPurify kanonik motoru, Source/Split, 150 ms debounce, task-list+footnote. **Eksik:** KaTeX, Prism highlight, scroll-sync. |
 | 4 | Atomik kaydet + lossy guard | P0 | ◑ | Atomik tempfile+rename ✅; lossy `SaveError::Lossy` ile reddediliyor ✅. **Eksik:** lossy'de "yine de kaydet/dönüştür" diyaloğu (şu an hata). |
-| 5 | Büyük dosya: degraded + StreamViewer | P0 | ✅ | 3-katman; `memmap2`+sparse index+Channel `read_lines`; virtualized viewer; generation/path-tagged yaşam döngüsü. **GUI smoke testi (>1 GB) bekliyor.** |
-| 6 | Rust streaming find/replace | P1 | ◑ | **Find** ✅: `search_file` (grep-searcher/grep-regex), linear-time (ReDoS testi), Channel akış, stream-viewer find bar (Ctrl+F). **Eksik:** replace; CM6 tier'ları için find. |
+| 5 | Büyük dosya: degraded + StreamViewer | P0 | ✅ | 3-katman; `memmap2`+sparse index+Channel `read_lines`; virtualized viewer; generation/path-tagged yaşam döngüsü. GUI smoke testi (1.2 GB log) ✅; canlı-test + adversarial-review düzeltmeleri uygulandı. |
+| 6 | Rust streaming find/replace | P1 | ◑ | **Find** ✅: `search_file` (grep-searcher/grep-regex), linear-time (ReDoS testi), Channel akış, stream-viewer find bar (Ctrl+F); encoding-aware (legacy charset transcode). **CM6 tier find** ✅: `@codemirror/search` (Ctrl+F/G), Full+Degraded'da, dark-themed panel. **Eksik:** replace (CM6 panel'de mevcut ama akış olarak büyük-dosya replace yok). |
 | 7 | WYSIWYG (Crepe, lazy) + round-trip guard | P1 | ⬜ | Lossy uyarısı; idempotent geçiş |
 | 8 | HTML + PDF export | P1 | ⬜ | Preview ile byte-aynı HTML; PDF birebir |
 | 9 | Dosya izleme + çatışma banner'ı | P1 | ⬜ | Disk değişti+dirty → 3-seçenekli banner |

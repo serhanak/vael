@@ -9,6 +9,7 @@ import {
 } from '@codemirror/view'
 import { Compartment, type Extension } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
+import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/search'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { languages } from '@codemirror/language-data'
 import {
@@ -62,11 +63,18 @@ export function baseExtensions(cb: EditorCallbacks, degraded = false): Extension
     drawSelection(),
     rectangularSelection(),
     history(),
+    // In-file find/replace (Ctrl+F). On in every editable tier — it operates on
+    // the already-loaded CM6 document, so it's correct for Full and Degraded; the
+    // >1 GB StreamViewer (never fully loaded) has its own Rust-backed find bar.
+    // Cheap and viewport-bounded, so it stays on even when degraded.
+    search({ top: true }),
+    highlightSelectionMatches(),
     featuresCompartment.of(degraded ? [] : heavyFeatures()),
     // Wrap is OFF when degraded so a newline-less multi-MB line can't trigger
     // O(line-length) layout; the user gets horizontal scroll instead.
     wrapCompartment.of(degraded ? [] : EditorView.lineWrapping),
-    keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+    // searchKeymap before defaultKeymap so Ctrl+F/G bind to the panel.
+    keymap.of([...searchKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab]),
     EditorView.theme(
       {
         '&': { fontSize: '13px', backgroundColor: '#1e1e22', color: '#e6e6e6' },
@@ -77,6 +85,35 @@ export function baseExtensions(cb: EditorCallbacks, degraded = false): Extension
         },
         '.cm-activeLine': { backgroundColor: '#26262b' },
         '.cm-activeLineGutter': { backgroundColor: '#26262b' },
+        // Search/replace panel — match the app chrome (default CM styling is light).
+        '.cm-panels': { backgroundColor: '#26262b', color: '#e6e6e6' },
+        '.cm-panels.cm-panels-top': { borderBottom: '1px solid #333' },
+        '.cm-panel.cm-search': { padding: '6px 8px' },
+        '.cm-panel.cm-search label': { fontSize: '12px' },
+        '.cm-panel.cm-search input[type=text]': {
+          backgroundColor: '#1f1f24',
+          color: '#e6e6e6',
+          border: '1px solid #444',
+          borderRadius: '4px',
+          padding: '2px 6px',
+        },
+        '.cm-panel.cm-search button': {
+          backgroundColor: '#34343b',
+          color: '#d6d6de',
+          border: '1px solid #444',
+          borderRadius: '4px',
+          padding: '2px 8px',
+          cursor: 'pointer',
+        },
+        '.cm-panel.cm-search button:hover': { backgroundColor: '#3e3e47' },
+        '.cm-panel.cm-search button[name=close]': {
+          border: 'none',
+          background: 'transparent',
+          color: '#9a9aa2',
+        },
+        '.cm-searchMatch': { backgroundColor: 'rgba(255, 214, 110, 0.25)' },
+        '.cm-searchMatch-selected': { backgroundColor: 'rgba(255, 214, 110, 0.5)' },
+        '.cm-selectionMatch': { backgroundColor: 'rgba(120, 170, 255, 0.18)' },
       },
       { dark: true },
     ),
