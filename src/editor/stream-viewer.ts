@@ -48,6 +48,11 @@ export class StreamViewer extends LitElement {
     return Math.max(this.totalLines, this.maxHitLine + 1)
   }
 
+  /** Float line at the top of the viewport (drives row placement). Decoupled
+   *  from raw scrollTop because the scrollbar is scaled for huge files. */
+  private topLine = 0
+  private viewportH = 0
+
   /** line index → decoded text. Bounded; oldest *insertions* are evicted
    *  (insertion-order, not access-order), except lines in the visible window. */
   private cache = new Map<number, string>()
@@ -55,6 +60,10 @@ export class StreamViewer extends LitElement {
   private static readonly CACHE_CAP = 8000
   private readonly lineHeight = 18
   private readonly overscan = 60
+  /** Browser/WebView2 (Chromium) caps element height at ~33.5M px; above this
+   *  the sizer is clamped and absolute row positions break. Stay well under and
+   *  scale the line↔pixel mapping past it. */
+  private static readonly MAX_SIZER_PX = 30_000_000
   /** The range a fetch is currently in flight for (de-dupes scroll spam). */
   private pendingFrom = -1
   private pendingTo = -1
@@ -62,6 +71,10 @@ export class StreamViewer extends LitElement {
    *  epoch are discarded so old-encoding lines never land in the fresh cache. */
   private epoch = 0
   private scrollEl?: HTMLElement
+  /** The translated row layer; its transform is updated synchronously on scroll
+   *  (not via the async render) so it can't lag the native scroll and flicker. */
+  private rowsEl?: HTMLElement
+  private rafPending = false
 
   static styles = css`
     :host {
@@ -73,6 +86,9 @@ export class StreamViewer extends LitElement {
       position: relative;
       height: 100%;
       overflow: auto;
+      /* Don't let the browser re-adjust scrollTop when the windowed rows change
+         under the viewport — that fights our own layout and causes flicker. */
+      overflow-anchor: none;
       background: #1b1b1f;
       font: 12px/18px ui-monospace, 'Cascadia Code', Consolas, monospace;
       color: #d2d2da;
@@ -85,6 +101,7 @@ export class StreamViewer extends LitElement {
       top: 0;
       left: 0;
       right: 0;
+      will-change: transform;
     }
     .row {
       position: absolute;
@@ -183,6 +200,7 @@ export class StreamViewer extends LitElement {
 
   firstUpdated() {
     this.scrollEl = this.renderRoot.querySelector('.scroll') as HTMLElement
+    this.rowsEl = this.renderRoot.querySelector('.rows') as HTMLElement
     this.scrollEl.addEventListener('scroll', this.onScroll, { passive: true })
     this.recompute()
   }
@@ -268,8 +286,10 @@ export class StreamViewer extends LitElement {
     await this.updateComplete
     const el = this.scrollEl
     if (el) {
-      const target = line * this.lineHeight - el.clientHeight / 2 + this.lineHeight / 2
-      el.scrollTop = Math.max(0, target)
+      // Center the line: put (line - half a viewport) at the top, via the
+      // scaled mapping so it works for huge files past the pixel cap too.
+      const targetTop = line - Math.floor(this.visibleCount / 2)
+      el.scrollTop = this.scrollTopForLine(targetTop)
       this.recompute()
     }
   }
@@ -311,8 +331,12 @@ export class StreamViewer extends LitElement {
       this.firstVisible = 0
       this.recompute()
     } else if (changed.has('totalLines')) {
-      // The background index just reported more lines; fill any rows in the
-      // current viewport that were beyond the previous (provisional) total.
+      // The background index reported more lines, so the virtual height (and,
+      // for huge files, the scaled scrollTop↔line mapping) changed. Re-anchor on
+      // the same top line so the view doesn't drift as indexing progresses.
+      if (this.scrollEl && this.topLine > 0) {
+        this.scrollEl.scrollTop = this.scrollTopForLine(this.topLine)
+      }
       this.recompute()
     }
   }
@@ -324,14 +348,61 @@ export class StreamViewer extends LitElement {
     clearTimeout(this.searchTimer)
   }
 
-  private onScroll = () => this.recompute()
+  private onScroll = () => {
+    const el = this.scrollEl
+    if (!el) return
+    // Pin the row layer to the viewport SYNCHRONOUSLY every scroll event so it
+    // tracks the native scroll exactly (an async-render transform lags a frame
+    // and flickers). The heavier line-mapping work is throttled to one a frame.
+    this.pinRows(el.scrollTop)
+    if (!this.rafPending) {
+      this.rafPending = true
+      requestAnimationFrame(() => {
+        this.rafPending = false
+        this.recompute()
+      })
+    }
+  }
+
+  /** Keep `.rows` glued to the viewport top (it otherwise scrolls away with the
+   *  content, since it's absolutely positioned inside the scroller). */
+  private pinRows(scrollTop: number) {
+    if (this.rowsEl) this.rowsEl.style.transform = `translateY(${scrollTop}px)`
+  }
+
+  /** Sizer (scrollbar) height: the true content height, clamped to the
+   *  browser's max so it isn't silently truncated for huge files. */
+  private get sizerHeight(): number {
+    return Math.min(this.virtualLines * this.lineHeight, StreamViewer.MAX_SIZER_PX)
+  }
+
+  /** Topmost first-visible line when scrolled to the very bottom. */
+  private get maxTopLine(): number {
+    return Math.max(0, this.virtualLines - this.visibleCount)
+  }
 
   private recompute() {
     const el = this.scrollEl
     if (!el) return
-    this.firstVisible = Math.floor(el.scrollTop / this.lineHeight)
-    this.visibleCount = Math.max(1, Math.ceil(el.clientHeight / this.lineHeight))
+    this.viewportH = el.clientHeight
+    const scrollTop = el.scrollTop
+    this.pinRows(scrollTop) // also pin on programmatic scrolls (jump, resize)
+    this.visibleCount = Math.max(1, Math.ceil(this.viewportH / this.lineHeight))
+    const maxScroll = Math.max(0, this.sizerHeight - this.viewportH)
+    // Map the (possibly scaled) scrollbar position to a fractional line. When
+    // the content fits under MAX_SIZER_PX this is exactly scrollTop/lineHeight.
+    this.topLine = maxScroll > 0 ? (scrollTop / maxScroll) * this.maxTopLine : 0
+    this.firstVisible = Math.floor(this.topLine)
     this.ensureLoaded(this.firstVisible - this.overscan, this.visibleCount + 2 * this.overscan)
+  }
+
+  /** Inverse of `recompute`'s mapping: scrollTop that puts `topLine` at the top. */
+  private scrollTopForLine(topLine: number): number {
+    const el = this.scrollEl
+    if (!el) return 0
+    const maxScroll = Math.max(0, this.sizerHeight - el.clientHeight)
+    const clamped = Math.max(0, Math.min(this.maxTopLine, topLine))
+    return this.maxTopLine > 0 ? (clamped / this.maxTopLine) * maxScroll : 0
   }
 
   /** Fetch any not-yet-cached lines in the desired window, coalesced into one
@@ -462,8 +533,7 @@ export class StreamViewer extends LitElement {
   }
 
   render() {
-    // Use the virtual extent (which covers search hits past the indexed total)
-    // so the sizer is tall enough to reach a hit and the matched row renders.
+    // Use the virtual extent (which covers search hits past the indexed total).
     const extent = this.virtualLines
     const from = Math.max(0, this.firstVisible - this.overscan)
     const to = Math.min(extent, this.firstVisible + this.visibleCount + this.overscan)
@@ -471,8 +541,12 @@ export class StreamViewer extends LitElement {
     const rows = []
     for (let i = from; i < to; i++) {
       const text = this.cache.get(i)
+      // Rows are positioned RELATIVE to the viewport top (the .rows layer is
+      // translated to follow the scroll), so positions stay small even when the
+      // file is 100M+ lines and the absolute scroll height would overflow.
+      const top = (i - this.topLine) * this.lineHeight
       rows.push(html`
-        <div class="row ${i === this.activeLine ? 'active' : ''}" style="top:${i * this.lineHeight}px">
+        <div class="row ${i === this.activeLine ? 'active' : ''}" style="top:${top}px">
           <span class="ln" style="min-width:${gutter}">${(i + 1).toLocaleString()}</span>
           <span class="tx ${text === undefined ? 'loading' : ''}">${text ?? '⋯'}</span>
         </div>
@@ -481,7 +555,7 @@ export class StreamViewer extends LitElement {
     return html`
       ${this.findOpen ? this.renderFindBar() : ''}
       <div class="scroll">
-        <div class="sizer" style="height:${extent * this.lineHeight}px"></div>
+        <div class="sizer" style="height:${this.sizerHeight}px"></div>
         <div class="rows">${rows}</div>
       </div>
     `
