@@ -207,8 +207,16 @@ export class VaelApp extends LitElement {
     // the backend memory-map / abort its scan (else a multi-GB mapping lingers
     // and its stale progress could clobber this file's line count).
     this.teardownStream()
-    this.editor?.setDegraded(r.tier === 'degraded')
+    // Order matters: CM6's heavy parser/highlight must NEVER run on a large
+    // document. Going TO degraded, turn the heavy features OFF *before* loading
+    // the big text. Going TO full, replace the (possibly large) old text with
+    // the new small text *first*, then turn features on — otherwise enabling
+    // highlight on a still-loaded big buffer (e.g. switching from a 75 MB log
+    // back to a small file) parses the whole thing and hangs for seconds.
+    const degraded = r.tier === 'degraded'
+    if (degraded) this.editor?.setDegraded(true)
     this.editor?.setText(r.content)
+    if (!degraded) this.editor?.setDegraded(false)
     this.dirty = false // setText fires doc-changed synchronously; clear after
     if (this.mode === 'split') this.previewMd = r.content
   }

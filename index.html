@@ -4,6 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>vael</title>
+    <style>
+      /* Reset the UA body margin and let the app own the full viewport, so the
+         document itself never scrolls (otherwise the 8px body margin pushes the
+         100vh app past the viewport → a second, document-level scrollbar). */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      body {
+        overflow: hidden;
+      }
+    </style>
   </head>
   <body>
     <vael-app></vael-app>
