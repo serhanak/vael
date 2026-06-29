@@ -75,6 +75,12 @@ export class StreamViewer extends LitElement {
    *  (not via the async render) so it can't lag the native scroll and flicker. */
   private rowsEl?: HTMLElement
   private rafPending = false
+  /** Re-measures geometry when the viewport is resized (window/pane/layout);
+   *  without it a maximize leaves blank rows / a stale jump mapping until the
+   *  next scroll, since geometry is otherwise only derived inside recompute(). */
+  private resizeObs?: ResizeObserver
+  /** Deferred, epoch-guarded retry after a transient line-fetch failure. */
+  private retryTimer?: number
 
   static styles = css`
     :host {
@@ -202,6 +208,12 @@ export class StreamViewer extends LitElement {
     this.scrollEl = this.renderRoot.querySelector('.scroll') as HTMLElement
     this.rowsEl = this.renderRoot.querySelector('.rows') as HTMLElement
     this.scrollEl.addEventListener('scroll', this.onScroll, { passive: true })
+    // Geometry (viewport height, visible-row count, scaled scroll↔line mapping)
+    // is derived from clientHeight; recompute whenever the viewport resizes, or a
+    // window-maximize / pane-drag leaves blank rows and a stale jump mapping
+    // until the next scroll event happens to re-run recompute().
+    this.resizeObs = new ResizeObserver(() => this.recompute())
+    this.resizeObs.observe(this.scrollEl)
     this.recompute()
   }
 
@@ -238,9 +250,14 @@ export class StreamViewer extends LitElement {
     this.hits = []
     this.current = -1
     this.activeLine = -1
-    this.maxHitLine = 0
     this.summary = null
     this.resultsQuery = ''
+    // NB: maxHitLine is deliberately NOT reset here. It sizes the virtual extent
+    // (virtualLines) so a jump to a hit past the still-indexing `totalLines` isn't
+    // clamped. Zeroing it at the start of every re-search would collapse the sizer
+    // and yank a deep-scrolled viewport backward mid-grep. It is reset only on a
+    // genuine new document (updated(), below) and overwritten when fresh results
+    // arrive (runSearch).
   }
 
   private async runSearch() {
@@ -320,12 +337,16 @@ export class StreamViewer extends LitElement {
     // jump back to the top (cached lines were decoded with the old encoding).
     if (changed.has('path') || changed.has('encoding')) {
       this.epoch++ // invalidate any in-flight fetch from the previous file/encoding
+      clearTimeout(this.retryTimer)
       this.cache.clear()
       this.cacheOrder = []
       this.pendingFrom = this.pendingTo = -1
-      // Search results belong to the previous file/encoding — drop them.
+      // Search results belong to the previous file/encoding — drop them. This is a
+      // real new document, so the virtual extent must reset too (clearResults
+      // leaves maxHitLine alone for the mid-re-search case).
       this.searchSeq++
       this.clearResults()
+      this.maxHitLine = 0
       this.searchError = ''
       if (this.scrollEl) this.scrollEl.scrollTop = 0
       this.firstVisible = 0
@@ -345,7 +366,9 @@ export class StreamViewer extends LitElement {
     super.disconnectedCallback()
     this.scrollEl?.removeEventListener('scroll', this.onScroll)
     window.removeEventListener('keydown', this.onKeydown)
+    this.resizeObs?.disconnect()
     clearTimeout(this.searchTimer)
+    clearTimeout(this.retryTimer)
   }
 
   private onScroll = () => {
@@ -365,9 +388,18 @@ export class StreamViewer extends LitElement {
   }
 
   /** Keep `.rows` glued to the viewport top (it otherwise scrolls away with the
-   *  content, since it's absolutely positioned inside the scroller). */
+   *  content, since it's absolutely positioned inside the scroller) AND carry the
+   *  sub-line scroll offset. Rows are laid out at integer line positions relative
+   *  to `firstVisible`, so they only re-render when the line window shifts; the
+   *  fractional remainder of the current scroll position is applied here, in the
+   *  synchronous transform, so within-line scrolling stays pixel-smooth without a
+   *  re-render (and can't lag a frame behind the native scroll and flicker). */
   private pinRows(scrollTop: number) {
-    if (this.rowsEl) this.rowsEl.style.transform = `translateY(${scrollTop}px)`
+    if (!this.rowsEl) return
+    const maxScroll = Math.max(0, this.sizerHeight - this.viewportH)
+    const topLine = maxScroll > 0 ? (scrollTop / maxScroll) * this.maxTopLine : 0
+    const frac = topLine - Math.floor(topLine)
+    this.rowsEl.style.transform = `translateY(${scrollTop - frac * this.lineHeight}px)`
   }
 
   /** Sizer (scrollbar) height: the true content height, clamped to the
@@ -385,14 +417,17 @@ export class StreamViewer extends LitElement {
     const el = this.scrollEl
     if (!el) return
     this.viewportH = el.clientHeight
-    const scrollTop = el.scrollTop
-    this.pinRows(scrollTop) // also pin on programmatic scrolls (jump, resize)
     this.visibleCount = Math.max(1, Math.ceil(this.viewportH / this.lineHeight))
+    const scrollTop = el.scrollTop
     const maxScroll = Math.max(0, this.sizerHeight - this.viewportH)
     // Map the (possibly scaled) scrollbar position to a fractional line. When
     // the content fits under MAX_SIZER_PX this is exactly scrollTop/lineHeight.
     this.topLine = maxScroll > 0 ? (scrollTop / maxScroll) * this.maxTopLine : 0
     this.firstVisible = Math.floor(this.topLine)
+    // Pin AFTER geometry is fresh: the sub-line fraction in pinRows depends on
+    // maxTopLine (→ visibleCount). Also re-pins on programmatic scrolls (jump,
+    // resize, indexing re-anchor).
+    this.pinRows(scrollTop)
     this.ensureLoaded(this.firstVisible - this.overscan, this.visibleCount + 2 * this.overscan)
   }
 
@@ -438,7 +473,16 @@ export class StreamViewer extends LitElement {
         this.requestUpdate()
       })
     } catch {
-      // session swapped or path mismatch; a later scroll will retry
+      // A transient read error (vs. a real session/path swap, which bumps epoch)
+      // would otherwise leave this window stuck showing '⋯' until the user
+      // scrolls. Schedule an epoch-guarded retry so an idle user recovers on its
+      // own; recompute() re-arms it until the window loads or the document
+      // changes. clearTimeout-stacked so only the latest retry is pending.
+      clearTimeout(this.retryTimer)
+      const ep = epoch
+      this.retryTimer = window.setTimeout(() => {
+        if (ep === this.epoch) this.recompute()
+      }, 600)
     } finally {
       if (this.pendingFrom === missFrom) {
         this.pendingFrom = this.pendingTo = -1
@@ -541,10 +585,11 @@ export class StreamViewer extends LitElement {
     const rows = []
     for (let i = from; i < to; i++) {
       const text = this.cache.get(i)
-      // Rows are positioned RELATIVE to the viewport top (the .rows layer is
-      // translated to follow the scroll), so positions stay small even when the
-      // file is 100M+ lines and the absolute scroll height would overflow.
-      const top = (i - this.topLine) * this.lineHeight
+      // Rows are positioned at INTEGER offsets relative to firstVisible (the
+      // .rows layer is translated to follow the scroll AND carry the sub-line
+      // fraction), so positions stay small even at 100M+ lines, and the rows
+      // re-render only when the line window shifts — not on every sub-line scroll.
+      const top = (i - this.firstVisible) * this.lineHeight
       rows.push(html`
         <div class="row ${i === this.activeLine ? 'active' : ''}" style="top:${top}px">
           <span class="ln" style="min-width:${gutter}">${(i + 1).toLocaleString()}</span>
