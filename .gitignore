@@ -23,5 +23,8 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 
+# Local Claude Code state (settings.local.json, scheduled task locks)
+.claude/
+
 # local test fixtures (large)
 test-files/
