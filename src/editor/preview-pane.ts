@@ -165,6 +165,17 @@ export class PreviewPane extends LitElement {
       font-size: 0.9em;
       color: #a8a8b3;
     }
+    /* Display math: texmath wraps $$…$$ in a classless <section> (footnotes are a
+       <section class="footnotes">, excluded here). Center it and let a wide
+       equation scroll rather than overflow the pane. */
+    .prose section:not(.footnotes) {
+      text-align: center;
+      margin: 1em 0;
+      overflow-x: auto;
+    }
+    .prose .katex {
+      font-size: 1.05em;
+    }
     .prose .footnote-ref a,
     .prose .footnote-backref {
       color: #79b0ff;

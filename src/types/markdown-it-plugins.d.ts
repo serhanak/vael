@@ -11,3 +11,17 @@ declare module 'markdown-it-footnote' {
   const footnote: PluginSimple
   export default footnote
 }
+
+declare module 'markdown-it-texmath' {
+  import type { PluginWithOptions } from 'markdown-it'
+  interface TexmathOptions {
+    /** The math engine (the KaTeX module). */
+    engine: unknown
+    /** Delimiter set, e.g. 'dollars' (`$…$` / `$$…$$`). */
+    delimiters?: string | string[]
+    /** Passed through to katex.renderToString. */
+    katexOptions?: Record<string, unknown>
+  }
+  const texmath: PluginWithOptions<TexmathOptions>
+  export default texmath
+}

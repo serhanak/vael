@@ -81,6 +81,31 @@ describe('renderMarkdown — syntax highlighting (Prism)', () => {
   })
 })
 
+describe('renderMarkdown — math (KaTeX → MathML)', () => {
+  it('renders inline $…$ math as MathML that survives sanitization', () => {
+    const html = renderMarkdown('mass–energy: $E = mc^2$ done')
+    expect(html).toContain('<math')
+    expect(html).toContain('</math>')
+    expect(html).toMatch(/<mi[^>]*>m<\/mi>/) // 'm' variable → <mi>
+    expect(html).toContain('done') // surrounding prose intact
+    // The TeX source must be kept INSIDE <annotation> (hidden metadata), not
+    // unwrapped into visible text next to the formula.
+    expect(html).toMatch(/<annotation[^>]*>E = mc\^2<\/annotation>/)
+  })
+
+  it('renders display $$…$$ math in block mode', () => {
+    const html = renderMarkdown('$$\\int_0^1 x\\,dx$$')
+    expect(html).toContain('<math')
+    expect(html).toMatch(/display="block"/) // $$ → block MathML
+  })
+
+  it('does not throw on a malformed expression (throwOnError:false) and stays inert', () => {
+    const html = renderMarkdown('bad $\\frac{1}{}$ ok')
+    expect(html).toContain('ok')
+    expect(html).not.toMatch(/<script/i)
+  })
+})
+
 describe('renderMarkdown — sanitization (security)', () => {
   it('does not emit an executable <script> element', () => {
     const html = renderMarkdown('hello <script>alert(1)</script> world')
