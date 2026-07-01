@@ -52,6 +52,35 @@ describe('renderMarkdown — formatting', () => {
   })
 })
 
+describe('renderMarkdown — syntax highlighting (Prism)', () => {
+  it('emits Prism token markup for a known language', () => {
+    const html = renderMarkdown('```js\nconst x = 1\n```')
+    expect(html).toContain('language-js') // Prism's own 'js' alias → grammar found
+    expect(html).toMatch(/<span class="token /) // tokenized, not plain text
+    expect(html).toContain('const')
+  })
+
+  it('resolves an alias (py → python)', () => {
+    const html = renderMarkdown('```py\nprint("hi")\n```')
+    expect(html).toContain('language-python')
+    expect(html).toMatch(/<span class="token /)
+  })
+
+  it('keeps token span classes through sanitization', () => {
+    // The whole point of the canonical engine is that sanitization can't silently
+    // strip the highlight markup (class must survive DOMPurify).
+    const html = renderMarkdown('```rust\nfn main() {}\n```')
+    expect(html).toMatch(/class="token /)
+  })
+
+  it('falls back to plain, escaped code for an unknown language', () => {
+    const html = renderMarkdown('```notalang\nplain <stuff>\n```')
+    expect(html).not.toMatch(/token/) // no Prism tokens
+    expect(html).toMatch(/<code/)
+    expect(html).toContain('&lt;stuff&gt;') // still HTML-escaped, never raw
+  })
+})
+
 describe('renderMarkdown — sanitization (security)', () => {
   it('does not emit an executable <script> element', () => {
     const html = renderMarkdown('hello <script>alert(1)</script> world')

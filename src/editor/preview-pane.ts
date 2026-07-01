@@ -67,6 +67,60 @@ export class PreviewPane extends LitElement {
       background: none;
       padding: 0;
     }
+    /* Prism token palette (dark). Scoped to .prose so it stays inside the pane. */
+    .prose .token.comment,
+    .prose .token.prolog,
+    .prose .token.doctype,
+    .prose .token.cdata {
+      color: #6a6a75;
+      font-style: italic;
+    }
+    .prose .token.punctuation {
+      color: #9a9aa5;
+    }
+    .prose .token.property,
+    .prose .token.tag,
+    .prose .token.boolean,
+    .prose .token.number,
+    .prose .token.constant,
+    .prose .token.symbol,
+    .prose .token.deleted {
+      color: #f0937d;
+    }
+    .prose .token.selector,
+    .prose .token.attr-name,
+    .prose .token.string,
+    .prose .token.char,
+    .prose .token.builtin,
+    .prose .token.inserted {
+      color: #b5e08e;
+    }
+    .prose .token.operator,
+    .prose .token.entity,
+    .prose .token.url {
+      color: #9ad1e0;
+    }
+    .prose .token.atrule,
+    .prose .token.attr-value,
+    .prose .token.keyword {
+      color: #a5b4fc;
+    }
+    .prose .token.function,
+    .prose .token.class-name {
+      color: #ffd479;
+    }
+    .prose .token.regex,
+    .prose .token.important,
+    .prose .token.variable {
+      color: #f5c07a;
+    }
+    .prose .token.important,
+    .prose .token.bold {
+      font-weight: 600;
+    }
+    .prose .token.italic {
+      font-style: italic;
+    }
     .prose blockquote {
       margin: 1em 0;
       padding: 0.2em 1em;

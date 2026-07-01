@@ -2,6 +2,7 @@ import MarkdownIt from 'markdown-it'
 import taskLists from 'markdown-it-task-lists'
 import footnote from 'markdown-it-footnote'
 import DOMPurify from 'dompurify'
+import { highlightCode } from './prism'
 
 /**
  * The single canonical Markdown engine (PLAN.md §6.d).
@@ -11,14 +12,15 @@ import DOMPurify from 'dompurify'
  * between a JS preview engine and a separate export engine).
  *
  * Pipeline: markdown-it (CommonMark + GFM tables/strikethrough) + GFM task
- * lists + footnotes → DOMPurify. KaTeX, Mermaid and Prism highlighting are
- * layered on in a later increment.
+ * lists + footnotes + Prism syntax highlighting (static token markup) →
+ * DOMPurify. KaTeX and Mermaid are layered on in a later increment.
  */
 const md: MarkdownIt = new MarkdownIt({
   html: false, // raw HTML is escaped (defense-in-depth; output is sanitized too)
   linkify: true,
   typographer: false, // keep output deterministic for golden snapshots
   breaks: false,
+  highlight: highlightCode, // Prism tokens for fenced code (empty → md's default)
 })
   // Read-only checkboxes (`- [ ]` / `- [x]`); not user-toggleable in preview.
   .use(taskLists, { label: true })
