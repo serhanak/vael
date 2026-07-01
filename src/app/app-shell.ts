@@ -69,6 +69,14 @@ export class VaelApp extends LitElement {
   private previewTimer?: number
   private streamUnlisten?: UnlistenFn
 
+  // Split-mode scroll sync between the editor and the preview. `syncLeader` is
+  // the pane the user is actively scrolling; the other pane's echoed scroll
+  // events are ignored until a short idle window clears the lock.
+  private syncLeader: 'editor' | 'preview' | null = null
+  private syncTimer?: number
+  private linkedEditorScroller?: HTMLElement
+  private linkedPreviewEl?: HTMLElement
+
   static styles = css`
     :host {
       display: flex;
@@ -169,6 +177,11 @@ export class VaelApp extends LitElement {
     return this.renderRoot.querySelector('source-view')
   }
 
+  /** The preview pane's scroll container (its :host has overflow:auto). */
+  private get previewEl(): HTMLElement | null {
+    return this.renderRoot.querySelector('preview-pane')
+  }
+
   private get tierLabel(): string {
     return this.tier === 'degraded' ? 'large file' : 'huge file'
   }
@@ -251,6 +264,73 @@ export class VaelApp extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback()
     this.teardownStream()
+    this.teardownScrollSync()
+  }
+
+  updated(changed: Map<string, unknown>) {
+    // Link/unlink editor↔preview scroll sync as we enter/leave split mode. (Tier
+    // changes can force `mode` back to source, so react to both.)
+    if (changed.has('mode') || changed.has('tier')) {
+      if (this.mode === 'split' && this.tier === 'full') {
+        // Defer until the freshly-rendered preview-pane and the CM scroller exist.
+        this.updateComplete.then(() => this.setupScrollSync())
+      } else {
+        this.teardownScrollSync()
+      }
+    }
+  }
+
+  private setupScrollSync() {
+    const ed = this.editor?.scroller ?? null
+    const pv = this.previewEl
+    if (!ed || !pv) return
+    if (this.linkedEditorScroller === ed && this.linkedPreviewEl === pv) return // already linked
+    this.teardownScrollSync()
+    this.linkedEditorScroller = ed
+    this.linkedPreviewEl = pv
+    ed.addEventListener('scroll', this.onEditorScroll, { passive: true })
+    pv.addEventListener('scroll', this.onPreviewScroll, { passive: true })
+  }
+
+  private teardownScrollSync() {
+    this.linkedEditorScroller?.removeEventListener('scroll', this.onEditorScroll)
+    this.linkedPreviewEl?.removeEventListener('scroll', this.onPreviewScroll)
+    this.linkedEditorScroller = undefined
+    this.linkedPreviewEl = undefined
+    clearTimeout(this.syncTimer)
+    this.syncLeader = null
+  }
+
+  private onEditorScroll = () => {
+    if (this.syncLeader === 'preview') return // preview is driving; ignore the echo
+    this.syncLeader = 'editor'
+    if (this.linkedEditorScroller && this.linkedPreviewEl) {
+      this.copyScrollFraction(this.linkedEditorScroller, this.linkedPreviewEl)
+    }
+    this.armSyncRelease()
+  }
+
+  private onPreviewScroll = () => {
+    if (this.syncLeader === 'editor') return
+    this.syncLeader = 'preview'
+    if (this.linkedEditorScroller && this.linkedPreviewEl) {
+      this.copyScrollFraction(this.linkedPreviewEl, this.linkedEditorScroller)
+    }
+    this.armSyncRelease()
+  }
+
+  /** Release the leader lock after a short idle so the other pane can take over. */
+  private armSyncRelease() {
+    clearTimeout(this.syncTimer)
+    this.syncTimer = window.setTimeout(() => (this.syncLeader = null), 120)
+  }
+
+  /** Match `to`'s scroll position to `from`'s, by fraction of scrollable height. */
+  private copyScrollFraction(from: HTMLElement, to: HTMLElement) {
+    const fromMax = from.scrollHeight - from.clientHeight
+    const toMax = to.scrollHeight - to.clientHeight
+    if (fromMax <= 0 || toMax <= 0) return
+    to.scrollTop = (from.scrollTop / fromMax) * toMax
   }
 
   private onDocChanged() {

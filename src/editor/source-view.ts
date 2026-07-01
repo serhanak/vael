@@ -79,6 +79,11 @@ export class SourceView extends LitElement {
     return this.view?.state.doc.lines ?? 1
   }
 
+  /** CodeMirror's scrolling element (`.cm-scroller`), for split scroll-sync. */
+  get scroller(): HTMLElement | null {
+    return this.view?.scrollDOM ?? null
+  }
+
   render() {
     return html`<div class="cm-host"></div>`
   }
