@@ -6,7 +6,7 @@ use std::io::Read;
 
 use serde::Serialize;
 
-use crate::encoding::{analyze, encode_for_save, is_streamable_label, Eol};
+use crate::encoding::{analyze, encode_for_save, is_streamable_label, Eol, SaveError};
 
 /// Size-based handling tier (PLAN.md §6.b, docs/design/02-large-file.md §1).
 /// The thresholds are deliberate: `Full` keeps every CM6 feature; `Degraded`
@@ -146,7 +146,20 @@ pub fn reopen_with_encoding(path: String, encoding: String) -> Result<OpenResult
     open_inner(path, Some(&encoding))
 }
 
-/// Encode `text` per (encoding + add_bom + eol) and write it atomically.
+/// Result of a save attempt. Either the file was written, or it would lose data
+/// in the target legacy encoding (`Lossy`) and the frontend must confirm via the
+/// lossy dialog before retrying with `allow_lossy = true`. Serialized tagged:
+/// `{ "kind": "saved", "meta": {…} }` or `{ "kind": "lossy" }`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum SaveOutcome {
+    Saved { meta: FileMeta },
+    Lossy,
+}
+
+/// Encode `text` per (encoding + add_bom + eol) and write it atomically. A
+/// legacy target that can't represent some character returns `Lossy` (not an
+/// error) unless `allow_lossy` — the user chose "save anyway".
 #[tauri::command]
 pub fn save_file(
     path: String,
@@ -154,14 +167,23 @@ pub fn save_file(
     encoding: String,
     add_bom: bool,
     eol: String,
-) -> Result<FileMeta, String> {
-    let bytes = encode_for_save(&text, &encoding, add_bom, Eol::from_label(&eol)).map_err(|e| e.to_string())?;
+    allow_lossy: bool,
+) -> Result<SaveOutcome, String> {
+    let bytes = match encode_for_save(&text, &encoding, add_bom, Eol::from_label(&eol), allow_lossy) {
+        Ok(b) => b,
+        // Not a hard error: the caller shows the lossy dialog and may retry with
+        // allow_lossy=true, or convert to UTF-8.
+        Err(SaveError::Lossy(_)) => return Ok(SaveOutcome::Lossy),
+        Err(e) => return Err(e.to_string()),
+    };
     atomic_write(&path, &bytes).map_err(|e| format!("Could not save {path}: {e}"))?;
-    Ok(FileMeta {
-        path,
-        encoding,
-        has_bom: add_bom,
-        eol,
+    Ok(SaveOutcome::Saved {
+        meta: FileMeta {
+            path,
+            encoding,
+            has_bom: add_bom,
+            eol,
+        },
     })
 }
 

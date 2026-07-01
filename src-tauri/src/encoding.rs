@@ -292,7 +292,19 @@ impl std::error::Error for SaveError {}
 
 /// Encode text for writing to disk. `label` (base encoding) and `add_bom` are
 /// independent: "UTF-8" + add_bom=true is the ONLY way to produce a UTF-8 BOM.
-pub fn encode_for_save(text: &str, label: &str, add_bom: bool, eol: Eol) -> Result<Vec<u8>, SaveError> {
+///
+/// A legacy target that can't represent some character is refused with
+/// `SaveError::Lossy` UNLESS `allow_lossy` is set (the user explicitly chose
+/// "save anyway" in the lossy dialog); then encoding_rs's replacement — numeric
+/// character references — is written. UTF-8/UTF-16 can represent all of Unicode,
+/// so they are never lossy.
+pub fn encode_for_save(
+    text: &str,
+    label: &str,
+    add_bom: bool,
+    eol: Eol,
+    allow_lossy: bool,
+) -> Result<Vec<u8>, SaveError> {
     let normalized = apply_eol(text, eol);
     let s: &str = &normalized;
 
@@ -312,7 +324,7 @@ pub fn encode_for_save(text: &str, label: &str, add_bom: bool, eol: Eol) -> Resu
             // encoding_rs provides encoders for legacy charsets (not UTF-16/32).
             let enc = encoding_for_label(other).ok_or_else(|| SaveError::UnknownEncoding(other.to_string()))?;
             let (cow, _enc, had_unmappable) = enc.encode(s);
-            if had_unmappable {
+            if had_unmappable && !allow_lossy {
                 return Err(SaveError::Lossy(other.to_string()));
             }
             Ok(cow.into_owned())
@@ -343,7 +355,7 @@ mod tests {
     #[test]
     fn name_byte_lock_no_bom_injection() {
         // "UTF-8" must NEVER produce a BOM.
-        let out = encode_for_save("hello", "UTF-8", false, Eol::Lf).unwrap();
+        let out = encode_for_save("hello", "UTF-8", false, Eol::Lf, false).unwrap();
         assert_ne!(&out[..out.len().min(3)], &[0xEF, 0xBB, 0xBF]);
         assert_eq!(out, b"hello");
     }
@@ -351,7 +363,7 @@ mod tests {
     #[test]
     fn name_byte_lock_bom_only_when_asked() {
         // BOM appears only with add_bom=true.
-        let out = encode_for_save("hello", "UTF-8", true, Eol::Lf).unwrap();
+        let out = encode_for_save("hello", "UTF-8", true, Eol::Lf, false).unwrap();
         assert_eq!(&out[..3], &[0xEF, 0xBB, 0xBF]);
         assert_eq!(&out[3..], b"hello");
     }
@@ -377,7 +389,7 @@ mod tests {
         // Open BOM'd file → save with its flags → BOM still there, once.
         let a = analyze("\u{FEFF}data".as_bytes(), None); // UTF-8 BOM + "data"
         assert!(a.has_bom);
-        let out = encode_for_save(&a.content, "UTF-8", a.has_bom, Eol::from_label(&a.eol)).unwrap();
+        let out = encode_for_save(&a.content, "UTF-8", a.has_bom, Eol::from_label(&a.eol), false).unwrap();
         assert_eq!(&out[..3], &[0xEF, 0xBB, 0xBF]);
         assert_eq!(&out[3..], b"data");
     }
@@ -392,22 +404,27 @@ mod tests {
     fn lossy_guard_refuses_silent_loss() {
         // A CJK character cannot be represented in Windows-1254 (Turkish); we must
         // refuse rather than silently writing '?' (Notepad++'s silent data loss).
-        let err = encode_for_save("hello 中", "Windows-1254", false, Eol::Lf);
+        let err = encode_for_save("hello 中", "Windows-1254", false, Eol::Lf, false);
         assert!(matches!(err, Err(SaveError::Lossy(_))));
         // Sanity: the euro sign *is* in Windows-1254, so it must NOT be lossy.
-        assert!(encode_for_save("price €5", "Windows-1254", false, Eol::Lf).is_ok());
+        assert!(encode_for_save("price €5", "Windows-1254", false, Eol::Lf, false).is_ok());
+        // "Save anyway" (allow_lossy=true): writes bytes instead of refusing. The
+        // unmappable CJK char becomes encoding_rs's numeric-char-reference bytes.
+        let lossy = encode_for_save("hi 中", "Windows-1254", false, Eol::Lf, true).unwrap();
+        assert!(lossy.starts_with(b"hi ")); // representable prefix kept
+        assert!(lossy.windows(2).any(|w| w == b"&#")); // unmappable → &#…; reference
     }
 
     #[test]
     fn eol_preserve_crlf() {
         // CM6 hands us LF text; saving with tracked CRLF must produce CRLF.
-        let out = encode_for_save("a\nb\nc", "UTF-8", false, Eol::Crlf).unwrap();
+        let out = encode_for_save("a\nb\nc", "UTF-8", false, Eol::Crlf, false).unwrap();
         assert_eq!(out, b"a\r\nb\r\nc");
     }
 
     #[test]
     fn eol_crlf_no_doubling() {
-        let out = encode_for_save("a\r\nb", "UTF-8", false, Eol::Crlf).unwrap();
+        let out = encode_for_save("a\r\nb", "UTF-8", false, Eol::Crlf, false).unwrap();
         assert_eq!(out, b"a\r\nb");
     }
 
@@ -440,7 +457,7 @@ mod tests {
 
     #[test]
     fn utf16le_round_trip_with_bom() {
-        let out = encode_for_save("hi", "UTF-16 LE", true, Eol::Lf).unwrap();
+        let out = encode_for_save("hi", "UTF-16 LE", true, Eol::Lf, false).unwrap();
         assert_eq!(out, vec![0xFF, 0xFE, b'h', 0x00, b'i', 0x00]);
         let a = analyze(&out, None);
         assert_eq!(a.content, "hi");

@@ -46,6 +46,10 @@ export interface FileMeta {
   eol: Eol
 }
 
+/** Result of a save (mirrors Rust `SaveOutcome`): written, or refused because it
+ *  would lose data in the target encoding (needs the lossy dialog to confirm). */
+export type SaveOutcome = { kind: 'saved'; meta: FileMeta } | { kind: 'lossy' }
+
 /** Pick a file via dialog and open it (Rust detects encoding/BOM/EOL). */
 export async function openFile(): Promise<OpenResult | null> {
   const selected = await openDialog({ multiple: false, directory: false })
@@ -69,18 +73,20 @@ export async function saveFile(
   encoding: string,
   addBom: boolean,
   eol: Eol,
-): Promise<FileMeta | null> {
+  allowLossy = false,
+): Promise<SaveOutcome | null> {
   let target = path
   if (!target) {
     target = await saveDialog({})
-    if (!target) return null
+    if (!target) return null // user cancelled the Save-As dialog
   }
-  return invoke<FileMeta>('save_file', {
+  return invoke<SaveOutcome>('save_file', {
     path: target,
     text,
     encoding: encodingBase(encoding),
     addBom,
     eol,
+    allowLossy,
   })
 }
 

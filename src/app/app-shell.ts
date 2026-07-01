@@ -61,6 +61,11 @@ export class VaelApp extends LitElement {
   @state() private line = 1
   @state() private col = 1
 
+  // Lossy-save confirmation dialog (a character can't be represented in the
+  // chosen legacy encoding). `lossyResolve` is the pending choice callback.
+  @state() private lossyOpen = false
+  private lossyResolve?: (choice: 'utf8' | 'anyway' | 'cancel') => void
+
   // Large-file handling tier (PLAN.md §6.b).
   @state() private tier: Tier = 'full'
   @state() private byteLen = 0
@@ -170,6 +175,51 @@ export class VaelApp extends LitElement {
     .workspace stream-viewer {
       flex: 1 1 100%;
       min-width: 0;
+    }
+    .scrim {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.5);
+    }
+    .modal {
+      max-width: 440px;
+      margin: 0 16px;
+      padding: 16px 20px 18px;
+      background: #26262b;
+      border: 1px solid #4a4a55;
+      border-radius: 8px;
+      box-shadow: 0 12px 48px rgba(0, 0, 0, 0.55);
+    }
+    .modal h3 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      color: #f0f0f5;
+    }
+    .modal p {
+      margin: 0 0 16px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: #c4c4ce;
+    }
+    .modal .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .modal .actions button.primary {
+      background: #4a4a8a;
+      border-color: #5a5aa0;
+      color: #fff;
+    }
+    .modal .actions button.danger {
+      background: #6a2a2a;
+      border-color: #8a3a3a;
+      color: #ffcaca;
     }
   `
 
@@ -377,20 +427,57 @@ export class VaelApp extends LitElement {
     // Guard against saving the streaming viewer: there is no <source-view> in
     // the DOM, so getText() would be '' and overwrite the multi-GB file empty.
     if (this.readOnly || !this.canSave) return
+    await this.trySave(false)
+  }
+
+  /**
+   * Save, resolving a lossy-encoding refusal via the dialog. The backend returns
+   * `lossy` (not an error) when the target legacy encoding can't represent some
+   * character; we then ask the user and recurse once per choice: convert to
+   * UTF-8 (lossless) or save anyway (write with replacement).
+   */
+  private async trySave(allowLossy: boolean) {
     this.busy = true
     this.error = ''
     try {
       const text = this.editor?.getText() ?? ''
-      const meta = await saveFile(this.path, text, this.encoding, this.hasBom, this.eol)
-      if (meta) {
-        this.path = meta.path
-        this.dirty = false
+      const outcome = await saveFile(this.path, text, this.encoding, this.hasBom, this.eol, allowLossy)
+      if (!outcome) return // Save-As dialog cancelled
+      if (outcome.kind === 'lossy') {
+        this.busy = false
+        const choice = await this.askLossy()
+        if (choice === 'cancel') return
+        if (choice === 'utf8') {
+          this.encoding = 'UTF-8' // lossless target
+          this.hasBom = false
+          await this.trySave(false)
+        } else {
+          await this.trySave(true) // save anyway, in the lossy encoding
+        }
+        return
       }
+      this.path = outcome.meta.path
+      this.dirty = false
     } catch (e) {
       this.fail(e)
     } finally {
       this.busy = false
     }
+  }
+
+  /** Show the lossy-save dialog; resolves with the user's choice. */
+  private askLossy(): Promise<'utf8' | 'anyway' | 'cancel'> {
+    return new Promise((resolve) => {
+      this.lossyResolve = resolve
+      this.lossyOpen = true
+    })
+  }
+
+  private resolveLossy(choice: 'utf8' | 'anyway' | 'cancel') {
+    this.lossyOpen = false
+    const resolve = this.lossyResolve
+    this.lossyResolve = undefined
+    resolve?.(choice)
   }
 
   private async onReopen(e: Event) {
@@ -506,6 +593,32 @@ export class VaelApp extends LitElement {
         @toggle-bom=${this.onToggleBom}
         @set-eol=${this.onSetEol}
       ></status-bar>
+
+      ${this.lossyOpen ? this.renderLossyDialog() : ''}
+    `
+  }
+
+  private renderLossyDialog() {
+    return html`
+      <div class="scrim" @click=${() => this.resolveLossy('cancel')}>
+        <div class="modal" @click=${(e: Event) => e.stopPropagation()}>
+          <h3>Some characters can't be saved as ${this.encoding}</h3>
+          <p>
+            This document has characters that <strong>${this.encoding}</strong> can't
+            represent. Saving in this encoding replaces them (data loss). Save as UTF-8
+            to keep everything.
+          </p>
+          <div class="actions">
+            <button class="primary" @click=${() => this.resolveLossy('utf8')}>
+              Save as UTF-8
+            </button>
+            <button class="danger" @click=${() => this.resolveLossy('anyway')}>
+              Save anyway
+            </button>
+            <button @click=${() => this.resolveLossy('cancel')}>Cancel</button>
+          </div>
+        </div>
+      </div>
     `
   }
 }
