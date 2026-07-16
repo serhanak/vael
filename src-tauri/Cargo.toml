@@ -39,6 +39,11 @@ regex = "1"
 notify = "8"
 notify-debouncer-full = "0.5"
 
+# Unix-only: reading the process umask (there is no read-only syscall for it) so
+# a newly-created file gets the usual 0644-style mode instead of tempfile's 0600.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 # Used by Tauri's mobile tooling; harmless on desktop.
 default = []

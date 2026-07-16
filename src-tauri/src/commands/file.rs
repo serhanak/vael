@@ -220,6 +220,23 @@ pub fn write_text_file(path: String, text: String) -> Result<String, String> {
     Ok(path)
 }
 
+/// The mode `File::create` would give a new file: 0666 masked by the process
+/// umask. There is no read-only umask syscall — you must set it to read it — so
+/// sample once and cache: doing the clear/restore on every save would race with
+/// any concurrent file creation (which would briefly see umask 0 and get a
+/// world-writable file).
+#[cfg(unix)]
+fn default_new_file_mode() -> u32 {
+    use std::sync::OnceLock;
+    static UMASK: OnceLock<u32> = OnceLock::new();
+    let umask = *UMASK.get_or_init(|| unsafe {
+        let prev = libc::umask(0);
+        libc::umask(prev);
+        prev as u32
+    });
+    0o666 & !umask
+}
+
 /// Write via same-directory temp file + fsync + atomic rename, so a crash
 /// leaves either the old or the new complete file — never a half-written one.
 fn atomic_write(path: &str, bytes: &[u8]) -> std::io::Result<()> {
@@ -237,13 +254,22 @@ fn atomic_write(path: &str, bytes: &[u8]) -> std::io::Result<()> {
     tmp.write_all(bytes)?;
     tmp.as_file().sync_all()?; // fsync data before rename
 
-    // Preserve original Unix permissions when overwriting an existing file.
+    // Unix permissions: preserve the original file's mode when overwriting, and
+    // for a NEW file apply the umask-respecting default. The fallback matters —
+    // `canonicalize` fails for a not-yet-existing target, so `real` is the plain
+    // requested path and `metadata` fails too; without this the file would keep
+    // the 0600 that tempfile creates its temp with (rename preserves the temp
+    // inode's mode), landing every exported / Save-As'd new file owner-only
+    // instead of the usual 0644.
     #[cfg(unix)]
-    if let Ok(meta) = std::fs::metadata(&real) {
+    {
         use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&real)
+            .map(|m| m.permissions().mode())
+            .unwrap_or_else(|_| default_new_file_mode());
         let _ = tmp
             .as_file()
-            .set_permissions(std::fs::Permissions::from_mode(meta.permissions().mode()));
+            .set_permissions(std::fs::Permissions::from_mode(mode));
     }
 
     // Atomically replace the target: rename(2) on POSIX, MoveFileExW(REPLACE_EXISTING)

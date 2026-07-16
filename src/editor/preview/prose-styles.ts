@@ -174,3 +174,133 @@ export const PROSE_CSS = `
   text-decoration: none;
 }
 `
+
+/**
+ * Print/PDF overrides for an exported document. NOT used by the live preview
+ * pane (an app pane is never printed) — the export inlines it after PROSE_CSS.
+ * Kept beside the screen palette on purpose: a colour change above needs a
+ * matching look here.
+ *
+ * Why this is required rather than cosmetic: the screen theme is dark, but
+ * browsers drop element background-colours when printing (print-color-adjust
+ * defaults to "economy"). Without these rules the dark page background vanishes
+ * while the near-white text (#dcdce4) is kept — i.e. white-on-white, an
+ * essentially blank printout. So we flip to an ink-friendly light theme and
+ * force `print-color-adjust: exact` only on the few fills worth keeping.
+ */
+export const PRINT_CSS = `
+@media print {
+  body {
+    background: #fff;
+  }
+  .prose {
+    max-width: none;
+    padding: 0;
+    color: #111;
+  }
+  .prose h1,
+  .prose h2,
+  .prose h3,
+  .prose h4 {
+    color: #000;
+    break-after: avoid;
+  }
+  .prose h1 {
+    border-bottom-color: #ccc;
+  }
+  .prose h2 {
+    border-bottom-color: #ddd;
+  }
+  .prose a {
+    color: #0b3d91;
+  }
+  .prose code {
+    background: #f0f0f2;
+    color: #111;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .prose pre {
+    background: #f7f7f8;
+    border-color: #ccc;
+    color: #111;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    /* Paper has no horizontal scrollbar — wrap instead of clipping the line. */
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .prose blockquote {
+    color: #333;
+    border-left-color: #999;
+  }
+  .prose th {
+    background: #f0f0f2;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .prose th,
+  .prose td {
+    border-color: #999;
+  }
+  .prose hr {
+    border-top-color: #999;
+  }
+  .prose .footnotes {
+    border-top-color: #ccc;
+    color: #333;
+  }
+  .prose pre,
+  .prose blockquote,
+  .prose table,
+  .prose img {
+    break-inside: avoid;
+  }
+  /* Prism's dark token palette is illegible on paper — dark-on-light instead. */
+  .prose .token.comment,
+  .prose .token.prolog,
+  .prose .token.doctype,
+  .prose .token.cdata {
+    color: #6a737d;
+  }
+  .prose .token.punctuation {
+    color: #444;
+  }
+  .prose .token.property,
+  .prose .token.tag,
+  .prose .token.boolean,
+  .prose .token.number,
+  .prose .token.constant,
+  .prose .token.symbol,
+  .prose .token.deleted {
+    color: #b31d28;
+  }
+  .prose .token.selector,
+  .prose .token.attr-name,
+  .prose .token.string,
+  .prose .token.char,
+  .prose .token.builtin,
+  .prose .token.inserted {
+    color: #22863a;
+  }
+  .prose .token.operator,
+  .prose .token.entity,
+  .prose .token.url {
+    color: #005cc5;
+  }
+  .prose .token.atrule,
+  .prose .token.attr-value,
+  .prose .token.keyword {
+    color: #6f42c1;
+  }
+  .prose .token.function,
+  .prose .token.class-name {
+    color: #953800;
+  }
+  .prose .token.regex,
+  .prose .token.important,
+  .prose .token.variable {
+    color: #b31d28;
+  }
+}
+`
