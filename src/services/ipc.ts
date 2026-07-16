@@ -189,10 +189,27 @@ export function openPath(path: string): Promise<OpenResult> {
   return invoke<OpenResult>('open_file', { path })
 }
 
-/** Prompt for a Save-As destination; null if the dialog is cancelled. */
-export function pickSavePath(): Promise<string | null> {
-  const picked = saveDialog({})
-  return picked as Promise<string | null>
+/** A named group of file extensions for the save dialog's type filter. */
+export interface SaveDialogFilter {
+  name: string
+  extensions: string[]
+}
+
+/** Prompt for a save destination; null if the dialog is cancelled. Optional
+ *  `defaultPath` pre-fills the name and `filters` set the file-type dropdown
+ *  (used by export to suggest an .html name). */
+export function pickSavePath(opts?: {
+  defaultPath?: string
+  filters?: SaveDialogFilter[]
+}): Promise<string | null> {
+  return saveDialog(opts ?? {}) as Promise<string | null>
+}
+
+/** Write UTF-8 `text` to `path` atomically, with no encoding/BOM/EOL policy
+ *  (the caller supplies exact bytes). Used by standalone HTML export. Resolves
+ *  to the written path. */
+export function writeTextFile(path: string, text: string): Promise<string> {
+  return invoke<string>('write_text_file', { path, text })
 }
 
 // ---------------------------------------------------------------------------

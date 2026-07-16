@@ -14,6 +14,7 @@ pub fn run() {
             commands::file::open_file,
             commands::file::reopen_with_encoding,
             commands::file::save_file,
+            commands::file::write_text_file,
             commands::bigfile::start_stream,
             commands::bigfile::read_lines,
             commands::bigfile::close_stream,

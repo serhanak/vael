@@ -388,7 +388,7 @@ update-available   { version, notes }    // updater plugin
 
 ### 9.2 MVP Özellikleri (önceliklendirilmiş, kabul kriterli)
 
-> Durum kolonu (2026-07-01, main): ✅ tamam · ◑ kısmi · ⬜ başlanmadı. Birim testler: 40 Rust + 19 vitest yeşil.
+> Durum kolonu (2026-07-01, main): ✅ tamam · ◑ kısmi · ⬜ başlanmadı. Birim testler: 40 Rust + 25 vitest yeşil.
 
 | # | Özellik | Öncelik | Durum | Kabul kriteri |
 |---|---|---|---|---|
@@ -399,7 +399,7 @@ update-available   { version, notes }    // updater plugin
 | 5 | Büyük dosya: degraded + StreamViewer | P0 | ✅ | 3-katman; `memmap2`+sparse index+Channel `read_lines`; virtualized viewer; generation/path-tagged yaşam döngüsü. GUI smoke testi (1.2 GB log) ✅; canlı-test + adversarial-review düzeltmeleri uygulandı. |
 | 6 | Rust streaming find/replace | P1 | ◑ | **Find** ✅: `search_file` (grep-searcher/grep-regex), linear-time (ReDoS testi), Channel akış, stream-viewer find bar (Ctrl+F); encoding-aware (legacy charset transcode). **CM6 tier find** ✅: `@codemirror/search` (Ctrl+F/G), Full+Degraded'da, dark-themed panel. **Eksik:** replace (CM6 panel'de mevcut ama akış olarak büyük-dosya replace yok). |
 | 7 | WYSIWYG (Crepe, lazy) + round-trip guard | P1 | ⬜ | Lossy uyarısı; idempotent geçiş |
-| 8 | HTML + PDF export | P1 | ⬜ | Preview ile byte-aynı HTML; PDF birebir |
+| 8 | HTML + PDF export | P1 | ◑ | **HTML** ✅: `buildStandaloneHtml` — canlı preview ile AYNI kanonik `renderMarkdown`'dan türer (drift imkânsız); tek `<style>` bloğunda inline stil (paylaşılan `preview/prose-styles.ts` → pane+export tek kaynak), harici `<link>`/`<script>`/`@import` yok, math native MathML (font/CSS gömme gerektirmez) → tam offline, taşınabilir. Rust `write_text_file` (atomik, encoding policy'siz). Full tier'a kısıtlı (markdown-it sınırsız). 6 golden test (self-contained + title-escape + XSS). **Eksik (PDF):** WebView `print_to_pdf` (birincil) — GUI/platform doğrulaması gerekir; remote görsel `data:` gömme (`inline-assets.ts`) sonraki rafinaj. |
 | 9 | Dosya izleme + çatışma banner'ı | P1 | ✅ | `notify`+`notify-debouncer-full` ile harici değişiklik izleme (parent-dir izlenir → atomic temp+rename replace de görülür); debounced `file-changed` eventi. Temiz buffer → sessiz reload; dirty → **3-seçenekli banner** (Reload / Save as… / Keep mine); dosya silindiyse "Save to restore". Kendi kaydımızın watcher echo'su **mtime kimliğiyle** ayırt edilir (kaydettiğimiz mtime = echo → yok say; harici yazma mtime'ı değiştirir → işlenir; sabit zaman penceresi yok, kayıp olay yok). Save-As hedef yolu `trySave`'e paramla geçer — başarısız/iptal Save-As orijinal dosyanın watch'ını ve banner'ını bozmaz. Save-As match ismi canonicalize edilir (case-insensitive FS'te farklı-case ad watch'ı öldürmez). Read-only stream tier izlenmez. (Adversarial review düzeltmeleri.) |
 | 10 | Komut paleti + kısayollar | P2 | ⬜ | Tüm komutlar paletten erişilir |
 | 11 | DOCX export (Pandoc varsa) | P2 | ⬜ | Pandoc yoksa gri |

@@ -25,6 +25,7 @@ import {
   type FileChange,
   type UnlistenFn,
 } from '../services/ipc'
+import { exportHtml } from '../services/export'
 
 type Mode = 'source' | 'split'
 
@@ -555,6 +556,22 @@ export class VaelApp extends LitElement {
     await this.trySave(false, p)
   }
 
+  /** Export the current document as a standalone HTML file (same canonical
+   *  render as the preview). Only for the `full` tier — markdown-it, like the
+   *  preview, is unbounded and must not run on a large/huge buffer. */
+  private async onExportHtml() {
+    if (this.tier !== 'full') return
+    this.busy = true
+    this.error = ''
+    try {
+      await exportHtml(this.editor?.getText() ?? '', this.path)
+    } catch (e) {
+      this.fail(e)
+    } finally {
+      this.busy = false
+    }
+  }
+
   /** Show the lossy-save dialog; resolves with the user's choice. */
   private askLossy(): Promise<'utf8' | 'anyway' | 'cancel'> {
     return new Promise((resolve) => {
@@ -624,6 +641,15 @@ export class VaelApp extends LitElement {
           title=${this.canSave ? 'Save' : 'Read-only encoding — convert to UTF-8 first'}
         >
           Save
+        </button>
+        <button
+          @click=${this.onExportHtml}
+          ?disabled=${this.busy || this.tier !== 'full'}
+          title=${this.tier === 'full'
+            ? 'Export a standalone HTML file (same as the preview)'
+            : 'Export is available for normal-size files'}
+        >
+          Export HTML…
         </button>
         <span class="modes">
           <button class=${this.mode === 'source' ? 'active' : ''} @click=${() => this.setMode('source')}>

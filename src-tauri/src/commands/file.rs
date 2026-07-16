@@ -210,6 +210,16 @@ pub fn save_file(
     })
 }
 
+/// Write UTF-8 `text` to `path` atomically. Unlike `save_file`, this applies no
+/// encoding/BOM/EOL policy — the caller already produced the exact bytes (an
+/// exported standalone HTML document). Used by HTML export (PLAN.md #8, §3.4
+/// `write_text_file`).
+#[tauri::command]
+pub fn write_text_file(path: String, text: String) -> Result<String, String> {
+    atomic_write(&path, text.as_bytes()).map_err(|e| format!("Could not write {path}: {e}"))?;
+    Ok(path)
+}
+
 /// Write via same-directory temp file + fsync + atomic rename, so a crash
 /// leaves either the old or the new complete file — never a half-written one.
 fn atomic_write(path: &str, bytes: &[u8]) -> std::io::Result<()> {
