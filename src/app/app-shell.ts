@@ -76,8 +76,10 @@ export class VaelApp extends LitElement {
   // on disk by another program.
   @state() private conflict: 'modified' | 'removed' | null = null
   private watchUnlisten?: UnlistenFn
-  /** Ignore `file-changed` events until this time — our own save's echo. */
-  private suppressWatchUntil = 0
+  /** mtime (ms) the file had right after our own last save. A `file-changed`
+   *  event carrying this exact mtime is that save's echo and is ignored; a real
+   *  external write bumps the mtime and is handled. 0 = no self-write to ignore. */
+  private lastSavedMtime = 0
 
   // Large-file handling tier (PLAN.md §6.b).
   @state() private tier: Tier = 'full'
@@ -282,6 +284,7 @@ export class VaelApp extends LitElement {
     this.byteLen = r.byteLen
     this.lineCount = r.lineCount
     this.conflict = null // a fresh open/reload clears any external-change banner
+    this.lastSavedMtime = 0 // no pending self-write echo for a newly-opened file
     // Preview engines (markdown-it) and Crepe are unbounded; only the small
     // `full` tier may show split preview. Force back to source for big files.
     if (r.tier !== 'full' && this.mode !== 'source') this.mode = 'source'
@@ -359,8 +362,11 @@ export class VaelApp extends LitElement {
    *  auto-reload a clean buffer; raise the conflict banner if there are edits. */
   private onExternalChange(c: FileChange) {
     if (c.path !== this.path) return // stale event from a previously-open file
-    if (Date.now() < this.suppressWatchUntil) return // our own save wrote it
     if (this.readOnly) return // the stream tier isn't watched; guard anyway
+    // Ignore the echo of our OWN save by mtime identity, not a blanket time
+    // window: a real external write in the moments after a save bumps the mtime
+    // and is still handled, instead of being silently swallowed.
+    if (c.mtimeMs !== 0 && c.mtimeMs === this.lastSavedMtime) return
     if (c.kind === 'removed') {
       this.conflict = 'removed'
       return
@@ -503,12 +509,12 @@ export class VaelApp extends LitElement {
    * character; we then ask the user and recurse once per choice: convert to
    * UTF-8 (lossless) or save anyway (write with replacement).
    */
-  private async trySave(allowLossy: boolean) {
+  private async trySave(allowLossy: boolean, target: string | null = this.path) {
     this.busy = true
     this.error = ''
     try {
       const text = this.editor?.getText() ?? ''
-      const outcome = await saveFile(this.path, text, this.encoding, this.hasBom, this.eol, allowLossy)
+      const outcome = await saveFile(target, text, this.encoding, this.hasBom, this.eol, allowLossy)
       if (!outcome) return // Save-As dialog cancelled
       if (outcome.kind === 'lossy') {
         this.busy = false
@@ -517,18 +523,21 @@ export class VaelApp extends LitElement {
         if (choice === 'utf8') {
           this.encoding = 'UTF-8' // lossless target
           this.hasBom = false
-          await this.trySave(false)
+          await this.trySave(false, target)
         } else {
-          await this.trySave(true) // save anyway, in the lossy encoding
+          await this.trySave(true, target) // save anyway, in the lossy encoding
         }
         return
       }
+      // Commit path/conflict/watch ONLY on a confirmed write. onSaveAs relies on
+      // this: a failed or cancelled Save-As must leave this.path, the banner, and
+      // the active watch on the ORIGINAL file untouched.
       this.path = outcome.meta.path
       this.dirty = false
       this.conflict = null // we just wrote it — no external conflict
-      // Ignore the watcher echo from our own atomic write, and (re)watch the
-      // possibly-new path (Save As).
-      this.suppressWatchUntil = Date.now() + 1500
+      // Recognize this write's own watcher echo by its mtime (not a time window),
+      // and (re)watch the possibly-new path (Save As).
+      this.lastSavedMtime = outcome.meta.mtimeMs
       void watchFile(outcome.meta.path)
     } catch (e) {
       this.fail(e)
@@ -537,13 +546,13 @@ export class VaelApp extends LitElement {
     }
   }
 
-  /** Save the current buffer to a new path (Save As), then watch it. */
+  /** Save the current buffer to a new path (Save As), then watch it. The picked
+   *  path is committed by trySave only on success, so a cancelled/failed save
+   *  leaves the original file watched and its conflict banner intact. */
   private async onSaveAs() {
     const p = await pickSavePath()
     if (!p) return
-    this.path = p
-    this.conflict = null
-    await this.trySave(false)
+    await this.trySave(false, p)
   }
 
   /** Show the lossy-save dialog; resolves with the user's choice. */

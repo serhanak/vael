@@ -3,6 +3,8 @@
 //! dialog plugin and calls these commands, so all byte-level policy lives here.
 
 use std::io::Read;
+use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
 
@@ -65,6 +67,22 @@ pub struct FileMeta {
     pub encoding: String,
     pub has_bom: bool,
     pub eol: String,
+    /// On-disk last-modified time (ms since epoch, 0 if unavailable). The
+    /// frontend records this after a save so the watcher echo of our own write
+    /// — which carries this same mtime — can be told apart from a genuine
+    /// external change (which bumps mtime). See `watch.rs`.
+    pub mtime_ms: u64,
+}
+
+/// Last-modified time of `path` as milliseconds since the Unix epoch, or 0 if it
+/// can't be read. Used to distinguish our own save from an external write.
+pub(crate) fn mtime_millis(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Read up to `max` bytes from the start of a file (encoding sniffing only
@@ -177,12 +195,17 @@ pub fn save_file(
         Err(e) => return Err(e.to_string()),
     };
     atomic_write(&path, &bytes).map_err(|e| format!("Could not save {path}: {e}"))?;
+    // Stat AFTER the write so the frontend can suppress the watcher echo of this
+    // exact save by mtime identity (a later external write bumps mtime and is
+    // therefore not suppressed).
+    let mtime_ms = mtime_millis(Path::new(&path));
     Ok(SaveOutcome::Saved {
         meta: FileMeta {
             path,
             encoding,
             has_bom: add_bom,
             eol,
+            mtime_ms,
         },
     })
 }
@@ -249,5 +272,15 @@ mod tests {
         assert_eq!(count_lines("a"), 1);
         assert_eq!(count_lines("a\nb"), 2);
         assert_eq!(count_lines("a\nb\n"), 3); // trailing newline → final empty line
+    }
+
+    #[test]
+    fn mtime_millis_reads_existing_and_zero_for_missing() {
+        // A real file reports a nonzero mtime; the frontend compares this exact
+        // value to a watcher event's mtime to recognize its own save's echo.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        assert!(mtime_millis(tmp.path()) > 0);
+        // An unreadable/absent path degrades to 0 (never matches a real save mtime).
+        assert_eq!(mtime_millis(Path::new("/vael/no/such/file-xyzzy")), 0);
     }
 }

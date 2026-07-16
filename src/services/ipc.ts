@@ -44,6 +44,9 @@ export interface FileMeta {
   encoding: string
   hasBom: boolean
   eol: Eol
+  /** On-disk mtime (ms since epoch) right after the save; used to recognize and
+   *  ignore the file-watcher echo of our own write. 0 if unavailable. */
+  mtimeMs: number
 }
 
 /** Result of a save (mirrors Rust `SaveOutcome`): written, or refused because it
@@ -160,6 +163,9 @@ export function closeStream(): Promise<void> {
 export interface FileChange {
   path: string
   kind: 'modified' | 'removed'
+  /** On-disk mtime (ms since epoch, 0 if removed). When it equals the mtime we
+   *  recorded from our own last save, the event is that save's echo — ignore it. */
+  mtimeMs: number
 }
 
 /** Watch `path` for external changes (replaces any previous watch). */

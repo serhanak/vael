@@ -17,6 +17,8 @@ use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, Recom
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::commands::file::mtime_millis;
+
 /// Debounce window: coalesce the multiple FS events one save emits.
 const DEBOUNCE_MS: u64 = 400;
 
@@ -33,6 +35,10 @@ pub struct FileChange {
     pub path: String,
     /// "modified" (still on disk) or "removed" (deleted).
     pub kind: String,
+    /// On-disk mtime (ms since epoch, 0 if removed/unreadable). The frontend
+    /// suppresses this event when it equals the mtime it recorded from its own
+    /// last save — that is our own atomic-write echo, not an external change.
+    pub mtime_ms: u64,
 }
 
 /// True if any event path is the target file. We watch only the file's own
@@ -53,10 +59,18 @@ pub fn watch_file(path: String, app: AppHandle, state: State<'_, WatchState>) ->
         .map(Path::to_path_buf)
         .filter(|d| !d.as_os_str().is_empty())
         .ok_or_else(|| "file has no parent directory to watch".to_string())?;
-    let target_name: OsString = target
-        .file_name()
-        .ok_or_else(|| "file has no name".to_string())?
-        .to_os_string();
+    // Match against the file's REAL on-disk name (from canonicalize), not the
+    // caller-supplied casing: a Save-As that types a different-case name over an
+    // existing file on a case-insensitive FS (Windows/macOS) would otherwise set
+    // a target_name that never matches the on-disk-cased event paths, silently
+    // killing the watch. Fall back to the raw name if the file doesn't exist yet.
+    // (Only the match NAME is canonicalized; the watched `dir` stays the raw path
+    // so notify never has to watch an extended-length `\\?\` directory.)
+    let target_name: OsString = std::fs::canonicalize(&target)
+        .ok()
+        .and_then(|c| c.file_name().map(OsStr::to_os_string))
+        .or_else(|| target.file_name().map(OsStr::to_os_string))
+        .ok_or_else(|| "file has no name".to_string())?;
 
     let emit_path = path.clone();
     let mut debouncer = new_debouncer(
@@ -76,10 +90,13 @@ pub fn watch_file(path: String, app: AppHandle, state: State<'_, WatchState>) ->
             // Stat now (post-debounce) rather than trust raw event kinds: an
             // atomic rename-replace looks like remove+create, but if the file is
             // present it was modified; only a true deletion leaves it absent.
-            let kind = if target.exists() { "modified" } else { "removed" };
+            let present = target.exists();
+            let kind = if present { "modified" } else { "removed" };
+            // mtime lets the frontend tell our own save's echo from a real edit.
+            let mtime_ms = if present { mtime_millis(&target) } else { 0 };
             let _ = app.emit(
                 "file-changed",
-                FileChange { path: emit_path.clone(), kind: kind.into() },
+                FileChange { path: emit_path.clone(), kind: kind.into(), mtime_ms },
             );
         },
     )
