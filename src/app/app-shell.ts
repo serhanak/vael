@@ -1,10 +1,12 @@
 import { LitElement, html, css } from 'lit'
 import { customElement, state } from 'lit/decorators.js'
 import './status-bar'
+import './command-palette'
 import '../editor/source-view'
 import '../editor/preview-pane'
 import '../editor/stream-viewer'
 import type { SourceView } from '../editor/source-view'
+import type { Command } from './commands'
 import {
   openFile,
   openPath,
@@ -81,6 +83,9 @@ export class VaelApp extends LitElement {
    *  event carrying this exact mtime is that save's echo and is ignored; a real
    *  external write bumps the mtime and is handled. 0 = no self-write to ignore. */
   private lastSavedMtime = 0
+
+  // Command palette (PLAN.md #10): a keyboard-driven menu of the toolbar actions.
+  @state() private paletteOpen = false
 
   // Large-file handling tier (PLAN.md §6.b).
   @state() private tier: Tier = 'full'
@@ -346,6 +351,14 @@ export class VaelApp extends LitElement {
     this.error = e instanceof Error ? e.message : String(e)
   }
 
+  connectedCallback() {
+    super.connectedCallback()
+    // App-wide keyboard shortcuts. On `window` (capture phase) so they work
+    // regardless of focus (CodeMirror, inputs) and can pre-empt WebView defaults
+    // like Ctrl+S "save page" / Ctrl+O "open".
+    window.addEventListener('keydown', this.onGlobalKey, true)
+  }
+
   async firstUpdated() {
     // Subscribe once to external file-change events (backend file watcher).
     this.watchUnlisten = await onFileChanged((c) => this.onExternalChange(c))
@@ -353,10 +366,76 @@ export class VaelApp extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback()
+    window.removeEventListener('keydown', this.onGlobalKey, true)
     this.teardownStream()
     this.teardownScrollSync()
     this.watchUnlisten?.()
     void unwatchFile()
+  }
+
+  /** App-wide accelerators. The command palette (Ctrl/Cmd+Shift+P) is the
+   *  discoverable surface; the direct ones mirror the shortcuts the palette
+   *  advertises. */
+  private onGlobalKey = (e: KeyboardEvent) => {
+    if (!(e.ctrlKey || e.metaKey)) return
+    const k = e.key.toLowerCase()
+    if (e.shiftKey && k === 'p') {
+      e.preventDefault()
+      this.paletteOpen = !this.paletteOpen
+    } else if (e.shiftKey && k === 's') {
+      e.preventDefault()
+      if (!this.readOnly && !this.busy) void this.onSaveAs()
+    } else if (!e.shiftKey && k === 's') {
+      e.preventDefault()
+      void this.onSave() // self-guards readOnly / !canSave
+    } else if (!e.shiftKey && k === 'o') {
+      e.preventDefault()
+      void this.onOpen()
+    }
+  }
+
+  /** The palette's command list, rebuilt from current state so each command's
+   *  `enabled` reflects the moment it is shown (PLAN.md #10). */
+  private get paletteCommands(): Command[] {
+    const full = this.tier === 'full'
+    const ro = this.readOnly
+    return [
+      { id: 'open', title: 'Open File…', hint: 'Ctrl+O', enabled: !this.busy, run: () => void this.onOpen() },
+      {
+        id: 'save',
+        title: 'Save',
+        hint: 'Ctrl+S',
+        enabled: !this.busy && this.canSave && !ro,
+        run: () => void this.onSave(),
+      },
+      {
+        id: 'saveAs',
+        title: 'Save As…',
+        hint: 'Ctrl+Shift+S',
+        enabled: !this.busy && !ro,
+        run: () => void this.onSaveAs(),
+      },
+      {
+        id: 'export',
+        title: 'Export HTML…',
+        enabled: !this.busy && full,
+        run: () => void this.onExportHtml(),
+      },
+      {
+        id: 'reload',
+        title: 'Reload from Disk',
+        enabled: !this.busy && !!this.path && !ro,
+        run: () => void this.reloadFromDisk(),
+      },
+      { id: 'source', title: 'View: Source', enabled: this.mode !== 'source', run: () => this.setMode('source') },
+      {
+        id: 'split',
+        title: 'View: Split Preview',
+        hint: full ? '' : 'normal-size files',
+        enabled: full && this.mode !== 'split',
+        run: () => this.setMode('split'),
+      },
+    ]
   }
 
   /** Backend reports the open file changed on disk. Ignore our own save's echo;
@@ -713,6 +792,12 @@ export class VaelApp extends LitElement {
       ></status-bar>
 
       ${this.lossyOpen ? this.renderLossyDialog() : ''}
+
+      <command-palette
+        .open=${this.paletteOpen}
+        .commands=${this.paletteCommands}
+        @close=${() => (this.paletteOpen = false)}
+      ></command-palette>
     `
   }
 
