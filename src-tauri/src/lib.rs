@@ -8,6 +8,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(commands::bigfile::StreamState::default())
+        .manage(commands::watch::WatchState::default())
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::file::open_file,
@@ -17,6 +18,8 @@ pub fn run() {
             commands::bigfile::read_lines,
             commands::bigfile::close_stream,
             commands::search::search_file,
+            commands::watch::watch_file,
+            commands::watch::unwatch_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running vael");

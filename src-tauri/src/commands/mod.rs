@@ -1,6 +1,7 @@
 pub mod bigfile;
 pub mod file;
 pub mod search;
+pub mod watch;
 
 use serde::Serialize;
 

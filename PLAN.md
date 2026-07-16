@@ -388,7 +388,7 @@ update-available   { version, notes }    // updater plugin
 
 ### 9.2 MVP Özellikleri (önceliklendirilmiş, kabul kriterli)
 
-> Durum kolonu (2026-07-01, main): ✅ tamam · ◑ kısmi · ⬜ başlanmadı. Birim testler: 38 Rust + 19 vitest yeşil.
+> Durum kolonu (2026-07-01, main): ✅ tamam · ◑ kısmi · ⬜ başlanmadı. Birim testler: 39 Rust + 19 vitest yeşil.
 
 | # | Özellik | Öncelik | Durum | Kabul kriteri |
 |---|---|---|---|---|
@@ -400,7 +400,7 @@ update-available   { version, notes }    // updater plugin
 | 6 | Rust streaming find/replace | P1 | ◑ | **Find** ✅: `search_file` (grep-searcher/grep-regex), linear-time (ReDoS testi), Channel akış, stream-viewer find bar (Ctrl+F); encoding-aware (legacy charset transcode). **CM6 tier find** ✅: `@codemirror/search` (Ctrl+F/G), Full+Degraded'da, dark-themed panel. **Eksik:** replace (CM6 panel'de mevcut ama akış olarak büyük-dosya replace yok). |
 | 7 | WYSIWYG (Crepe, lazy) + round-trip guard | P1 | ⬜ | Lossy uyarısı; idempotent geçiş |
 | 8 | HTML + PDF export | P1 | ⬜ | Preview ile byte-aynı HTML; PDF birebir |
-| 9 | Dosya izleme + çatışma banner'ı | P1 | ⬜ | Disk değişti+dirty → 3-seçenekli banner |
+| 9 | Dosya izleme + çatışma banner'ı | P1 | ✅ | `notify`+`notify-debouncer-full` ile harici değişiklik izleme (parent-dir izlenir → atomic temp+rename replace de görülür); debounced `file-changed` eventi. Temiz buffer → sessiz reload; dirty → **3-seçenekli banner** (Reload / Save as… / Keep mine); dosya silindiyse "Save to restore". Kendi kaydımızın watcher echo'su suppress penceresiyle (~1.5 s) yok sayılır. Read-only stream tier izlenmez. |
 | 10 | Komut paleti + kısayollar | P2 | ⬜ | Tüm komutlar paletten erişilir |
 | 11 | DOCX export (Pandoc varsa) | P2 | ⬜ | Pandoc yoksa gri |
 | 12 | Mermaid diyagram (lazy) | P2 | ⬜ | İlk diyagramda yüklenir, strict |

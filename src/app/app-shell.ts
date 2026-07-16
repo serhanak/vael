@@ -7,16 +7,22 @@ import '../editor/stream-viewer'
 import type { SourceView } from '../editor/source-view'
 import {
   openFile,
+  openPath,
   saveFile,
+  pickSavePath,
   reopenWithEncoding,
   confirmDiscard,
   startStream,
   onStreamProgress,
   closeStream,
+  watchFile,
+  unwatchFile,
+  onFileChanged,
   type Eol,
   type Confidence,
   type OpenResult,
   type Tier,
+  type FileChange,
   type UnlistenFn,
 } from '../services/ipc'
 
@@ -65,6 +71,13 @@ export class VaelApp extends LitElement {
   // chosen legacy encoding). `lossyResolve` is the pending choice callback.
   @state() private lossyOpen = false
   private lossyResolve?: (choice: 'utf8' | 'anyway' | 'cancel') => void
+
+  // External file-change (conflict) banner: the open file was modified/removed
+  // on disk by another program.
+  @state() private conflict: 'modified' | 'removed' | null = null
+  private watchUnlisten?: UnlistenFn
+  /** Ignore `file-changed` events until this time — our own save's echo. */
+  private suppressWatchUntil = 0
 
   // Large-file handling tier (PLAN.md §6.b).
   @state() private tier: Tier = 'full'
@@ -221,6 +234,20 @@ export class VaelApp extends LitElement {
       border-color: #8a3a3a;
       color: #ffcaca;
     }
+    .banner {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
+      padding: 6px 12px;
+      background: #4a3a1a;
+      color: #ffcf8a;
+      border-bottom: 1px solid #5a4a2a;
+      font-size: 13px;
+    }
+    .banner button {
+      padding: 2px 10px;
+    }
   `
 
   private get editor(): SourceView | null {
@@ -254,6 +281,7 @@ export class VaelApp extends LitElement {
     this.tier = r.tier
     this.byteLen = r.byteLen
     this.lineCount = r.lineCount
+    this.conflict = null // a fresh open/reload clears any external-change banner
     // Preview engines (markdown-it) and Crepe are unbounded; only the small
     // `full` tier may show split preview. Force back to source for big files.
     if (r.tier !== 'full' && this.mode !== 'source') this.mode = 'source'
@@ -261,7 +289,9 @@ export class VaelApp extends LitElement {
     await this.updateComplete
     if (r.tier === 'streamViewer') {
       // The whole file is never loaded; the read-only viewer pulls windows and
-      // the line count fills in from the background index build.
+      // the line count fills in from the background index build. Read-only, so
+      // it isn't file-watched.
+      void unwatchFile()
       this.dirty = false
       await this.startStreamFor(r.path, this.encoding)
       return
@@ -282,6 +312,7 @@ export class VaelApp extends LitElement {
     if (!degraded) this.editor?.setDegraded(false)
     this.dirty = false // setText fires doc-changed synchronously; clear after
     if (this.mode === 'split') this.previewMd = r.content
+    void watchFile(r.path) // watch for external changes (editable tiers only)
   }
 
   /** Unsubscribe from stream progress and close the backend session, if any. */
@@ -311,10 +342,46 @@ export class VaelApp extends LitElement {
     this.error = e instanceof Error ? e.message : String(e)
   }
 
+  async firstUpdated() {
+    // Subscribe once to external file-change events (backend file watcher).
+    this.watchUnlisten = await onFileChanged((c) => this.onExternalChange(c))
+  }
+
   disconnectedCallback() {
     super.disconnectedCallback()
     this.teardownStream()
     this.teardownScrollSync()
+    this.watchUnlisten?.()
+    void unwatchFile()
+  }
+
+  /** Backend reports the open file changed on disk. Ignore our own save's echo;
+   *  auto-reload a clean buffer; raise the conflict banner if there are edits. */
+  private onExternalChange(c: FileChange) {
+    if (c.path !== this.path) return // stale event from a previously-open file
+    if (Date.now() < this.suppressWatchUntil) return // our own save wrote it
+    if (this.readOnly) return // the stream tier isn't watched; guard anyway
+    if (c.kind === 'removed') {
+      this.conflict = 'removed'
+      return
+    }
+    if (this.dirty) this.conflict = 'modified' // real conflict — let the user choose
+    else void this.reloadFromDisk() // no local edits → silently pick up the new content
+  }
+
+  /** Re-read the open file from disk (fresh detection) and replace the buffer. */
+  private async reloadFromDisk() {
+    if (!this.path) return
+    this.busy = true
+    this.error = ''
+    try {
+      const r = await openPath(this.path)
+      await this.applyOpen(r) // resets dirty, re-watches, clears the banner
+    } catch (e) {
+      this.fail(e)
+    } finally {
+      this.busy = false
+    }
   }
 
   updated(changed: Map<string, unknown>) {
@@ -458,11 +525,25 @@ export class VaelApp extends LitElement {
       }
       this.path = outcome.meta.path
       this.dirty = false
+      this.conflict = null // we just wrote it — no external conflict
+      // Ignore the watcher echo from our own atomic write, and (re)watch the
+      // possibly-new path (Save As).
+      this.suppressWatchUntil = Date.now() + 1500
+      void watchFile(outcome.meta.path)
     } catch (e) {
       this.fail(e)
     } finally {
       this.busy = false
     }
+  }
+
+  /** Save the current buffer to a new path (Save As), then watch it. */
+  private async onSaveAs() {
+    const p = await pickSavePath()
+    if (!p) return
+    this.path = p
+    this.conflict = null
+    await this.trySave(false)
   }
 
   /** Show the lossy-save dialog; resolves with the user's choice. */
@@ -556,6 +637,8 @@ export class VaelApp extends LitElement {
         ${this.error ? html`<span class="error" title=${this.error}>⚠ ${this.error}</span>` : ''}
       </header>
 
+      ${this.conflict ? this.renderConflictBanner() : ''}
+
       <div class="workspace ${this.mode}">
         ${this.tier === 'streamViewer'
           ? html`<stream-viewer
@@ -595,6 +678,28 @@ export class VaelApp extends LitElement {
       ></status-bar>
 
       ${this.lossyOpen ? this.renderLossyDialog() : ''}
+    `
+  }
+
+  private renderConflictBanner() {
+    if (this.conflict === 'removed') {
+      return html`
+        <div class="banner">
+          <span>⚠ This file was deleted on disk.</span>
+          <span class="spacer"></span>
+          <button @click=${() => this.trySave(false)}>Save to restore</button>
+          <button @click=${() => (this.conflict = null)}>Dismiss</button>
+        </div>
+      `
+    }
+    return html`
+      <div class="banner">
+        <span>⚠ This file changed on disk.</span>
+        <span class="spacer"></span>
+        <button @click=${() => this.reloadFromDisk()}>Reload</button>
+        <button @click=${() => this.onSaveAs()}>Save as…</button>
+        <button @click=${() => (this.conflict = null)}>Keep mine</button>
+      </div>
     `
   }
 

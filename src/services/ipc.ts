@@ -153,6 +153,43 @@ export function closeStream(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// External file-change watching (M2 #9)
+// ---------------------------------------------------------------------------
+
+/** An external change to the open file (matches Rust `FileChange`). */
+export interface FileChange {
+  path: string
+  kind: 'modified' | 'removed'
+}
+
+/** Watch `path` for external changes (replaces any previous watch). */
+export function watchFile(path: string): Promise<void> {
+  return invoke('watch_file', { path })
+}
+
+/** Stop watching the current file. */
+export function unwatchFile(): Promise<void> {
+  return invoke('unwatch_file')
+}
+
+/** Subscribe to external file-change events (`file-changed`). */
+export function onFileChanged(cb: (c: FileChange) => void): Promise<UnlistenFn> {
+  return listen<FileChange>('file-changed', (e) => cb(e.payload))
+}
+
+/** Re-open a known path (no dialog) with fresh detection — used to reload after
+ *  an external change. */
+export function openPath(path: string): Promise<OpenResult> {
+  return invoke<OpenResult>('open_file', { path })
+}
+
+/** Prompt for a Save-As destination; null if the dialog is cancelled. */
+export function pickSavePath(): Promise<string | null> {
+  const picked = saveDialog({})
+  return picked as Promise<string | null>
+}
+
+// ---------------------------------------------------------------------------
 // In-file search (ripgrep engine — linear time, streams over multi-GB files)
 // ---------------------------------------------------------------------------
 
