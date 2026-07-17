@@ -28,3 +28,8 @@ Thumbs.db
 
 # local test fixtures (large)
 test-files/
+
+# Operator-test (docs/qa) byproducts — exported HTML and Save-As scratch files.
+# The committed fixtures (sample.md, lossy-test.md, watch-target.md) are kept.
+docs/qa/fixtures/*.html
+docs/qa/fixtures/watch-target-R*.md
